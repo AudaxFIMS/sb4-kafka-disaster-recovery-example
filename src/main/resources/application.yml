@@ -1,0 +1,86 @@
+spring:
+  cloud:
+    stream:
+      # Everything is generated dynamically from kafka-dr configuration.
+      # Nothing to configure here manually.
+      kafka:
+        binder:
+          auto-create-topics: true
+          replication-factor: 1
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+kafka-dr:
+  # Default binder environment — applied to ALL clusters.
+  # Structure is identical to spring.cloud.stream.binders.<name>.environment
+  # Per-cluster environment overrides these defaults.
+  default-environment:
+    spring.cloud.stream.kafka.binder:
+      auto-create-topics: true
+      replication-factor: 1
+      configuration:
+        # Reduce reconnect noise for dead clusters
+        reconnect.backoff.ms: 1000
+        reconnect.backoff.max.ms: 10000
+#      configuration:
+#        security.protocol: SSL
+#        ssl.truststore.location: /certs/truststore.p12
+#        ssl.truststore.password: ${TRUSTSTORE_PASSWORD}
+#        ssl.truststore.type: PKCS12
+#        ssl.keystore.location: /certs/keystore.p12
+#        ssl.keystore.password: ${KEYSTORE_PASSWORD}
+#        ssl.keystore.type: PKCS12
+#      consumer-properties:
+#        max.poll.records: 500
+#      producer-properties:
+#        acks: all
+#        retries: 3
+  clusters:
+    primary:
+      bootstrap-servers: ${KAFKA_PRIMARY_BROKERS:localhost:9092}
+      priority: 1
+    secondary:
+      bootstrap-servers: ${KAFKA_SECONDARY_BROKERS:localhost:9094}
+      priority: 2
+    tertiary:
+      bootstrap-servers: ${KAFKA_TERTIARY_BROKERS:localhost:9096}
+      priority: 3
+# Per-cluster override example:
+#      environment:
+#        spring.cloud.stream.kafka.binder:
+#          configuration:
+#            ssl.truststore.location: /certs/tertiary-truststore.p12
+#            ssl.truststore.password: ${TERTIARY_TRUSTSTORE_PASSWORD}
+
+  consumers:
+    - topic: demo-events
+      group: dr-demo-group
+      handler: processDemoEvent
+    - topic: order-events
+      group: dr-demo-group
+      handler: processOrder
+
+  health-check:
+    interval-ms: 5000
+    timeout-ms: 3000
+    failure-threshold: 3
+    recovery-threshold: 3
+  idempotency:
+    ttl-seconds: 3600
+    key-prefix: idempotency
+
+logging:
+  level:
+    # Suppress Kafka client reconnect noise for unhealthy clusters (health checker AdminClient)
+    org.apache.kafka.clients.NetworkClient: ERROR
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
