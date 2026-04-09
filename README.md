@@ -2,6 +2,9 @@
 
 A production-ready example of **active-passive disaster recovery** across N Kafka clusters using Spring Boot 4.0.5 and Spring Cloud Stream 2025.1.1. The application automatically detects cluster failures, switches producers and consumers to the next healthy cluster, and fails back when the original cluster recovers.
 
+> **Important: Cross-cluster replication is required.**
+> This application handles failover at the *application level* -- switching producers and consumers between clusters. However, it does **not** replicate data between Kafka clusters. During a failover, there is a brief window where in-flight messages may still be delivered to the previous cluster before the switch completes. To ensure no messages are lost, **cross-cluster replication must be configured independently** using tools such as [MirrorMaker 2](https://kafka.apache.org/documentation/#georeplication), Confluent Cluster Linking, or Confluent Replicator. These tools continuously replicate topics, consumer group offsets, and ACLs between clusters, ensuring that the DR cluster has a complete copy of the data at all times.
+
 ## Architecture
 
 ```
