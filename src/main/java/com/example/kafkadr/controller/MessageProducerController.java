@@ -1,7 +1,8 @@
-package com.example.kafkadr.producer;
+package com.example.kafkadr.controller;
 
 import com.example.kafkadr.avro.PaymentEvent;
 import com.example.kafkadr.avro.PaymentStatus;
+import com.example.kafkadr.producer.ResilientProducer;
 import com.example.kafkadr.routing.ActiveClusterManager;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
