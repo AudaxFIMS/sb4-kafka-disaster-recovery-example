@@ -9,21 +9,21 @@ import java.util.function.Consumer;
 
 /**
  * Wraps any message consumer with idempotency check.
- * Scoped by consumerName so different consumers/topics don't collide.
+ * Accepts Message<?> — the payload type is determined by the downstream handler.
  */
-public class IdempotentConsumer implements Consumer<Message<String>> {
+public class IdempotentConsumer implements Consumer<Message<?>> {
 
     private static final Logger log = LoggerFactory.getLogger(IdempotentConsumer.class);
 
     private final String consumerName;
     private final String clusterName;
     private final IdempotencyStore idempotencyStore;
-    private final Consumer<Message<String>> delegate;
+    private final Consumer<Message<?>> delegate;
 
     public IdempotentConsumer(String consumerName,
                               String clusterName,
                               IdempotencyStore idempotencyStore,
-                              Consumer<Message<String>> delegate) {
+                              Consumer<Message<?>> delegate) {
         this.consumerName = consumerName;
         this.clusterName = clusterName;
         this.idempotencyStore = idempotencyStore;
@@ -31,7 +31,7 @@ public class IdempotentConsumer implements Consumer<Message<String>> {
     }
 
     @Override
-    public void accept(Message<String> msg) {
+    public void accept(Message<?> msg) {
         String messageId = msg.getHeaders().get("message-id", String.class);
 
         if (messageId == null) {

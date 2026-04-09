@@ -26,7 +26,14 @@ public class ResilientProducer {
         this.clusterManager = clusterManager;
     }
 
-    public SendResult send(String topic, String payload, String messageId) {
+    /**
+     * Sends a message with automatic failover across clusters.
+     *
+     * @param topic     destination topic
+     * @param payload   any payload type — String, POJO, byte[], Map, etc.
+     * @param messageId optional idempotency key (generated if null)
+     */
+    public SendResult send(String topic, Object payload, String messageId) {
         String id = (messageId != null) ? messageId : UUID.randomUUID().toString();
         Set<String> triedClusters = new HashSet<>();
 
@@ -34,7 +41,6 @@ public class ResilientProducer {
             String cluster = clusterManager.getActiveCluster();
 
             if (triedClusters.contains(cluster)) {
-                // All reachable clusters exhausted — reelectActive returned one we already tried
                 break;
             }
 
@@ -52,9 +58,9 @@ public class ResilientProducer {
         return new SendResult(false, null, id);
     }
 
-    private boolean trySend(String topic, String cluster, String payload, String messageId) {
+    private boolean trySend(String topic, String cluster, Object payload, String messageId) {
         try {
-            Message<String> message = MessageBuilder.withPayload(payload)
+            Message<?> message = MessageBuilder.withPayload(payload)
                     .setHeader("message-id", messageId)
                     .setHeader("source-cluster", cluster)
                     .setHeader("sent-at", Instant.now().toString())
@@ -62,7 +68,10 @@ public class ResilientProducer {
 
             return streamBridge.send(topic, cluster, message);
         } catch (Exception e) {
-            log.warn("Send to cluster '{}' failed: {}", cluster, e.getMessage());
+            log.warn("Send to cluster '{}' failed: {} - {}", cluster, e.getClass().getSimpleName(), e.getMessage());
+            if (e.getCause() != null) {
+                log.warn("  Caused by: {} - {}", e.getCause().getClass().getSimpleName(), e.getCause().getMessage());
+            }
             return false;
         }
     }

@@ -13,14 +13,8 @@ public class KafkaClusterProperties {
 
     private Map<String, ClusterConfig> clusters = new LinkedHashMap<>();
     private List<ConsumerConfig> consumers = List.of();
-
-    /**
-     * Default binder environment properties applied to ALL clusters.
-     * Structure mirrors spring.cloud.stream.binders.{name}.environment
-     * Per-cluster settings override these defaults.
-     */
+    private List<ProducerConfig> producers = List.of();
     private Map<String, Object> defaultEnvironment = new LinkedHashMap<>();
-
     private HealthCheckConfig healthCheck = new HealthCheckConfig();
     private IdempotencyConfig idempotency = new IdempotencyConfig();
 
@@ -28,6 +22,8 @@ public class KafkaClusterProperties {
     public void setClusters(Map<String, ClusterConfig> clusters) { this.clusters = clusters; }
     public List<ConsumerConfig> getConsumers() { return consumers; }
     public void setConsumers(List<ConsumerConfig> consumers) { this.consumers = consumers; }
+    public List<ProducerConfig> getProducers() { return producers; }
+    public void setProducers(List<ProducerConfig> producers) { this.producers = producers; }
     public Map<String, Object> getDefaultEnvironment() { return defaultEnvironment; }
     public void setDefaultEnvironment(Map<String, Object> defaultEnvironment) { this.defaultEnvironment = defaultEnvironment; }
     public HealthCheckConfig getHealthCheck() { return healthCheck; }
@@ -59,12 +55,65 @@ public class KafkaClusterProperties {
         private String group = "dr-default-group";
         private String handler;
 
+        /**
+         * Payload content type. Controls how byte[] from Kafka is converted
+         * to the handler's Message<T> payload type.
+         *
+         * - "json"   — deserialize via Jackson ObjectMapper (default)
+         * - "string" — convert byte[] to String (UTF-8)
+         * - "bytes"  — pass byte[] as-is, no conversion
+         * - "native" — Kafka deserializer already produced the target type (e.g. Avro),
+         *              skip conversion entirely
+         */
+        private String contentType = "json";
+
+        /**
+         * Additional Kafka consumer properties for this topic's bindings.
+         * Useful for per-topic deserializer overrides (e.g. Avro).
+         * Maps to spring.cloud.stream.kafka.bindings.{binding}.consumer.configuration.*
+         */
+        private Map<String, String> properties = new LinkedHashMap<>();
+
         public String getTopic() { return topic; }
         public void setTopic(String topic) { this.topic = topic; }
         public String getGroup() { return group; }
         public void setGroup(String group) { this.group = group; }
         public String getHandler() { return handler; }
         public void setHandler(String handler) { this.handler = handler; }
+        public String getContentType() { return contentType; }
+        public void setContentType(String contentType) { this.contentType = contentType; }
+        public Map<String, String> getProperties() { return properties; }
+        public void setProperties(Map<String, String> properties) { this.properties = properties; }
+    }
+
+    /**
+     * Defines a producer for a specific topic.
+     * Output binding properties are generated for each producer x cluster pair.
+     */
+    public static class ProducerConfig {
+        private String topic;
+
+        /**
+         * Serialization type:
+         * - "json"   — default Spring serialization (default)
+         * - "string" — StringSerializer
+         * - "bytes"  — ByteArraySerializer
+         * - "native" — custom Kafka serializer (e.g. Avro), enable useNativeEncoding
+         */
+        private String contentType = "json";
+
+        /**
+         * Additional Kafka producer properties for this topic.
+         * Maps to spring.cloud.stream.kafka.bindings.{binding}.producer.configuration.*
+         */
+        private Map<String, String> properties = new LinkedHashMap<>();
+
+        public String getTopic() { return topic; }
+        public void setTopic(String topic) { this.topic = topic; }
+        public String getContentType() { return contentType; }
+        public void setContentType(String contentType) { this.contentType = contentType; }
+        public Map<String, String> getProperties() { return properties; }
+        public void setProperties(Map<String, String> properties) { this.properties = properties; }
     }
 
     public static class HealthCheckConfig {

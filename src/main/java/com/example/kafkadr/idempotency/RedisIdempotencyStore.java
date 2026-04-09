@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 
 @Component
-@Profile("!in-memory-idempotency")
+@Profile("redis-idempotency")
 public class RedisIdempotencyStore implements IdempotencyStore {
 
     private static final Logger log = LoggerFactory.getLogger(RedisIdempotencyStore.class);

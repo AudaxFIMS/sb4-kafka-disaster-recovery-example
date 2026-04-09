@@ -1,9 +1,12 @@
 package com.example.kafkadr.producer;
 
+import com.example.kafkadr.avro.PaymentEvent;
+import com.example.kafkadr.avro.PaymentStatus;
 import com.example.kafkadr.routing.ActiveClusterManager;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -20,25 +23,60 @@ public class MessageProducerController {
         this.clusterManager = clusterManager;
     }
 
+    /** Send a plain text message (content-type: string) */
     @PostMapping("/{topic}")
-    public ResponseEntity<Map<String, String>> send(
+    public ResponseEntity<Map<String, Object>> send(
             @PathVariable String topic,
             @RequestParam String message,
             @RequestParam(required = false) String messageId) {
 
         ResilientProducer.SendResult result = producer.send(topic, message, messageId);
+        return toResponse(result, topic, message);
+    }
 
-        Map<String, String> response = new LinkedHashMap<>();
-        response.put("status", result.success() ? "sent" : "failed");
-        response.put("cluster", result.cluster() != null ? result.cluster() : "none");
-        response.put("topic", topic);
-        response.put("messageId", result.messageId());
-        response.put("message", message);
+    /** Send a JSON payload (content-type: json) */
+    @PostMapping(value = "/{topic}/json", consumes = "application/json")
+    public ResponseEntity<Map<String, Object>> sendJson(
+            @PathVariable String topic,
+            @RequestBody Object payload,
+            @RequestParam(required = false) String messageId) {
 
-        if (result.success()) {
-            return ResponseEntity.ok(response);
-        }
-        return ResponseEntity.internalServerError().body(response);
+        ResilientProducer.SendResult result = producer.send(topic, payload, messageId);
+        return toResponse(result, topic, payload);
+    }
+
+    /** Send raw bytes (content-type: bytes) */
+    @PostMapping(value = "/{topic}/bytes", consumes = "application/octet-stream")
+    public ResponseEntity<Map<String, Object>> sendBytes(
+            @PathVariable String topic,
+            @RequestBody byte[] payload,
+            @RequestParam(required = false) String messageId) {
+
+        ResilientProducer.SendResult result = producer.send(topic, payload, messageId);
+        return toResponse(result, topic, payload.length + " bytes");
+    }
+
+    /** Send a test Avro PaymentEvent (content-type: native) */
+    @PostMapping("/payment-events/avro")
+    public ResponseEntity<Map<String, Object>> sendAvroPayment(
+            @RequestParam String paymentId,
+            @RequestParam String orderId,
+            @RequestParam double amount,
+            @RequestParam(defaultValue = "USD") String currency,
+            @RequestParam(defaultValue = "PENDING") String status,
+            @RequestParam(required = false) String messageId) {
+
+        PaymentEvent event = PaymentEvent.newBuilder()
+                .setPaymentId(paymentId)
+                .setOrderId(orderId)
+                .setAmount(amount)
+                .setCurrency(currency)
+                .setStatus(PaymentStatus.valueOf(status))
+                .setTimestamp(Instant.now().toEpochMilli())
+                .build();
+
+        ResilientProducer.SendResult result = producer.send("payment-events", event, messageId);
+        return toResponse(result, "payment-events", event.toString());
     }
 
     @GetMapping("/status")
@@ -48,5 +86,20 @@ public class MessageProducerController {
         response.put("clusterPriority", clusterManager.getClustersByPriority());
         response.put("healthStatuses", clusterManager.getHealthStatuses());
         return ResponseEntity.ok(response);
+    }
+
+    private ResponseEntity<Map<String, Object>> toResponse(
+            ResilientProducer.SendResult result, String topic, Object payload) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("status", result.success() ? "sent" : "failed");
+        response.put("cluster", result.cluster() != null ? result.cluster() : "none");
+        response.put("topic", topic);
+        response.put("messageId", result.messageId());
+        response.put("payload", payload);
+
+        if (result.success()) {
+            return ResponseEntity.ok(response);
+        }
+        return ResponseEntity.internalServerError().body(response);
     }
 }

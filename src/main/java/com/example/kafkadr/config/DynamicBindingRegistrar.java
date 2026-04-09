@@ -20,9 +20,9 @@ import java.util.*;
 import java.util.function.Consumer;
 
 @Component
-public class DynamicConsumerRegistrar implements BeanDefinitionRegistryPostProcessor, EnvironmentAware {
+public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProcessor, EnvironmentAware {
 
-    private static final Logger log = LoggerFactory.getLogger(DynamicConsumerRegistrar.class);
+    private static final Logger log = LoggerFactory.getLogger(DynamicBindingRegistrar.class);
 
     private ConfigurableEnvironment environment;
 
@@ -37,16 +37,11 @@ public class DynamicConsumerRegistrar implements BeanDefinitionRegistryPostProce
                 .bind("kafka-dr", KafkaClusterProperties.class)
                 .orElse(null);
 
-        if (props == null || props.getConsumers().isEmpty() || props.getClusters().isEmpty()) {
-            log.warn("No kafka-dr consumers or clusters configured, skipping dynamic registration");
+        if (props == null || props.getClusters().isEmpty()) {
+            log.warn("No kafka-dr clusters configured, skipping");
             return;
         }
 
-        injectStreamProperties(props);
-        registerConsumerBeans(registry, props);
-    }
-
-    private void injectStreamProperties(KafkaClusterProperties props) {
         Map<String, Object> generated = new LinkedHashMap<>();
         List<String> functionNames = new ArrayList<>();
 
@@ -55,7 +50,24 @@ public class DynamicConsumerRegistrar implements BeanDefinitionRegistryPostProce
                 .map(Map.Entry::getKey)
                 .orElseThrow();
 
-        // Generate binder definitions with full environment
+        generateBinders(props, generated);
+        generateConsumerBindings(props, generated, functionNames, primaryCluster);
+        generateProducerBindings(props, generated);
+
+        if (!functionNames.isEmpty()) {
+            generated.put("spring.cloud.function.definition", String.join(";", functionNames));
+        }
+
+        environment.getPropertySources().addFirst(
+                new MapPropertySource("kafka-dr-dynamic-bindings", generated));
+
+        log.info("Generated {} consumer bindings, {} producer configs for {} clusters",
+                functionNames.size(), props.getProducers().size(), props.getClusters().size());
+
+        registerConsumerBeans(registry, props);
+    }
+
+    private void generateBinders(KafkaClusterProperties props, Map<String, Object> generated) {
         for (Map.Entry<String, KafkaClusterProperties.ClusterConfig> entry : props.getClusters().entrySet()) {
             String clusterName = entry.getKey();
             String binderPrefix = "spring.cloud.stream.binders." + clusterName;
@@ -65,14 +77,16 @@ public class DynamicConsumerRegistrar implements BeanDefinitionRegistryPostProce
             generated.put(envPrefix + ".spring.cloud.stream.kafka.binder.brokers",
                     entry.getValue().getBootstrapServers());
 
-            // Merge default-environment + per-cluster environment, flattened
-            Map<String, String> effectiveEnv = props.getEffectiveEnvironment(clusterName);
-            for (Map.Entry<String, String> envEntry : effectiveEnv.entrySet()) {
+            for (Map.Entry<String, String> envEntry : props.getEffectiveEnvironment(clusterName).entrySet()) {
                 generated.put(envPrefix + "." + envEntry.getKey(), envEntry.getValue());
             }
         }
+    }
 
-        // Generate binding definitions
+    private void generateConsumerBindings(KafkaClusterProperties props,
+                                          Map<String, Object> generated,
+                                          List<String> functionNames,
+                                          String primaryCluster) {
         for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers()) {
             String topic = consumer.getTopic();
 
@@ -89,21 +103,55 @@ public class DynamicConsumerRegistrar implements BeanDefinitionRegistryPostProce
                 if (!cluster.equals(primaryCluster)) {
                     generated.put(prefix + ".consumer.auto-startup", "false");
                 }
+
+                if ("native".equalsIgnoreCase(consumer.getContentType())) {
+                    generated.put(prefix + ".consumer.use-native-decoding", "true");
+                }
+
+                String kafkaPrefix = "spring.cloud.stream.kafka.bindings." + bindingName
+                        + ".consumer.configuration";
+                for (Map.Entry<String, String> prop : consumer.getProperties().entrySet()) {
+                    generated.put(kafkaPrefix + "." + prop.getKey(), prop.getValue());
+                }
             }
         }
+    }
 
-        String functionDef = String.join(";", functionNames);
-        generated.put("spring.cloud.function.definition", functionDef);
+    /**
+     * Generates output binding properties for each producer topic.
+     *
+     * StreamBridge.send(topic, binderName, message) resolves output binding name as the topic name.
+     * We generate properties for "{topic}-out-0" which is what Spring Cloud Stream uses internally.
+     * Additionally, we generate for just "{topic}" to cover StreamBridge's dynamic binding resolution.
+     */
+    private void generateProducerBindings(KafkaClusterProperties props, Map<String, Object> generated) {
+        for (KafkaClusterProperties.ProducerConfig producer : props.getProducers()) {
+            String topic = producer.getTopic();
 
-        environment.getPropertySources().addFirst(
-                new MapPropertySource("kafka-dr-dynamic-bindings", generated));
+            // StreamBridge creates bindings with name = destination (the topic name)
+            // Generate for both possible binding name patterns
+            for (String outBinding : List.of(topic, topic + "-out-0")) {
+                String prefix = "spring.cloud.stream.bindings." + outBinding;
+                generated.put(prefix + ".destination", topic);
 
-        log.info("Generated function definition: {}", functionDef);
-        log.info("Generated {} binding properties for {} clusters",
-                functionNames.size(), props.getClusters().size());
+                if ("native".equalsIgnoreCase(producer.getContentType())) {
+                    generated.put(prefix + ".producer.use-native-encoding", "true");
+                }
+
+                String kafkaPrefix = "spring.cloud.stream.kafka.bindings." + outBinding
+                        + ".producer.configuration";
+                for (Map.Entry<String, String> prop : producer.getProperties().entrySet()) {
+                    generated.put(kafkaPrefix + "." + prop.getKey(), prop.getValue());
+                }
+            }
+
+            log.info("Generated producer binding: {} (content-type={})", topic, producer.getContentType());
+        }
     }
 
     private void registerConsumerBeans(BeanDefinitionRegistry registry, KafkaClusterProperties props) {
+        if (props.getConsumers().isEmpty()) return;
+
         BeanFactory beanFactory = (BeanFactory) registry;
 
         for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers()) {
