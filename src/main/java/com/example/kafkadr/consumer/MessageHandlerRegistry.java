@@ -29,9 +29,8 @@ public class MessageHandlerRegistry {
             msg -> log.info("[unhandled] Received: {}", msg.getPayload());
 
     public MessageHandlerRegistry(MessageProcessor processor,
-                                  KafkaClusterProperties properties,
-                                  ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+                                  KafkaClusterProperties properties) {
+        this.objectMapper = new ObjectMapper();
 
         for (ConsumerConfig consumer : properties.getConsumers()) {
             String topic = consumer.getTopic();
