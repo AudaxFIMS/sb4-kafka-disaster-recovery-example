@@ -73,7 +73,7 @@ public class LateBindingInitializer {
         }
     }
 
-    @Scheduled(fixedDelayString = "${kafka-dr.health-check.interval-ms:5000}")
+    @Scheduled(fixedDelayString = "${kafka-dr.late-initializer.timeout-ms:5000}")
     public void checkAndInitializeClusters() {
         for (String cluster : properties.getClusters().keySet()) {
             if (startupState.isInitialized(cluster)) {

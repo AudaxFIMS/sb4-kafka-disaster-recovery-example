@@ -85,6 +85,8 @@ kafka-dr:
     timeout-ms: 3000
     failure-threshold: 3
     recovery-threshold: 3
+  late-initializer:
+    timeout-ms: 3000
   idempotency:
     ttl-seconds: 3600
     key-prefix: idempotency
