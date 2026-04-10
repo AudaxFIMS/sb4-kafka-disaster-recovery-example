@@ -1,10 +1,10 @@
 package com.example.kafkadr.health;
 
+import com.example.kafkadr.config.KafkaAdminHelper;
 import com.example.kafkadr.config.KafkaClusterProperties;
 import com.example.kafkadr.config.KafkaClusterProperties.ClusterConfig;
 import com.example.kafkadr.routing.ActiveClusterManager;
 import org.apache.kafka.clients.admin.AdminClient;
-import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.health.contributor.Health;
@@ -64,12 +64,7 @@ public class ClusterHealthChecker implements HealthIndicator {
     }
 
     private boolean probe(String brokers, long timeoutMs, Map<String, String> kafkaClientProps) {
-        Map<String, Object> config = new HashMap<>(kafkaClientProps);
-        config.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, brokers);
-        config.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, (int) timeoutMs);
-        config.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, (int) timeoutMs);
-
-        try (AdminClient admin = AdminClient.create(config)) {
+        try (AdminClient admin = KafkaAdminHelper.createAdminClient(brokers, (int) timeoutMs, kafkaClientProps)) {
             admin.describeCluster()
                     .clusterId()
                     .get(timeoutMs, TimeUnit.MILLISECONDS);

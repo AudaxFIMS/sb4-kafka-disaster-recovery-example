@@ -59,11 +59,13 @@ services:
     container_name: schema-registry
     depends_on:
       - kafka-primary
+      - kafka-secondary
+      - kafka-tertiary
     ports:
       - "8081:8081"
     environment:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka-primary:19092
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka-primary:19092,kafka-secondary:19094,kafka-tertiary:19096
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
 
   redis:
