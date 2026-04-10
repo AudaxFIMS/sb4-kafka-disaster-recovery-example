@@ -6,12 +6,15 @@ import com.example.kafkadr.config.StartupClusterState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.stream.binder.Binder;
+import org.springframework.cloud.stream.binder.Binding;
 import org.springframework.cloud.stream.binder.BinderFactory;
 import org.springframework.cloud.stream.binder.ConsumerProperties;
 import org.springframework.cloud.stream.binder.ExtendedConsumerProperties;
 import org.springframework.cloud.stream.binder.kafka.properties.KafkaConsumerProperties;
 import org.springframework.cloud.stream.config.BindingServiceProperties;
+import org.springframework.context.ApplicationContext;
 import org.springframework.integration.channel.DirectChannel;
+import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -38,15 +41,15 @@ public class LateBindingInitializer {
     private final ActiveClusterManager clusterManager;
     private final BinderFactory binderFactory;
     private final BindingServiceProperties bindingServiceProperties;
-    private final Map<String, Consumer<org.springframework.messaging.Message<?>>> functionBeans;
-    private final Map<String, org.springframework.cloud.stream.binder.Binding<?>> lateBindings = new ConcurrentHashMap<>();
+    private final Map<String, Consumer<Message<?>>> functionBeans;
+    private final Map<String, Binding<?>> lateBindings = new ConcurrentHashMap<>();
 
     public LateBindingInitializer(KafkaClusterProperties properties,
                                   StartupClusterState startupState,
                                   ActiveClusterManager clusterManager,
                                   BinderFactory binderFactory,
                                   BindingServiceProperties bindingServiceProperties,
-                                  org.springframework.context.ApplicationContext applicationContext) {
+                                  ApplicationContext applicationContext) {
         this.properties = properties;
         this.startupState = startupState;
         this.clusterManager = clusterManager;
@@ -60,7 +63,7 @@ public class LateBindingInitializer {
                 String beanName = KafkaClusterProperties.functionName(consumer.getTopic(), cluster);
                 try {
                     @SuppressWarnings("unchecked")
-                    Consumer<org.springframework.messaging.Message<?>> bean =
+                    Consumer<Message<?>> bean =
                             applicationContext.getBean(beanName, Consumer.class);
                     functionBeans.put(beanName, bean);
                 } catch (Exception e) {
@@ -114,7 +117,7 @@ public class LateBindingInitializer {
             String functionName = KafkaClusterProperties.functionName(topic, cluster);
             String bindingName = functionName + "-in-0";
 
-            Consumer<org.springframework.messaging.Message<?>> handler = functionBeans.get(functionName);
+            Consumer<Message<?>> handler = functionBeans.get(functionName);
             if (handler == null) {
                 log.warn("No function bean found for '{}', skipping", functionName);
                 continue;
