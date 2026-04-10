@@ -2,18 +2,13 @@ package com.example.kafkadr.producer;
 
 import com.example.kafkadr.config.KafkaClusterProperties;
 import com.example.kafkadr.routing.ActiveClusterManager;
+import org.apache.kafka.common.errors.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.stream.function.StreamBridge;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.stereotype.Component;
-
-import org.apache.kafka.common.errors.BrokerNotAvailableException;
-import org.apache.kafka.common.errors.DisconnectException;
-import org.apache.kafka.common.errors.NetworkException;
-import org.apache.kafka.common.errors.SerializationException;
-import org.apache.kafka.common.errors.TimeoutException;
 
 import java.time.Instant;
 import java.util.HashSet;
@@ -129,6 +124,7 @@ public class ResilientProducer {
                     || e instanceof NetworkException
                     || e instanceof DisconnectException
                     || e instanceof BrokerNotAvailableException
+                    || e instanceof NotLeaderOrFollowerException
                     || e instanceof java.net.ConnectException) {
                 return true;
             }
