@@ -28,6 +28,7 @@ public class ActiveClusterManager {
     private final ConcurrentHashMap<String, AtomicInteger> failureCounts = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicInteger> successCounts = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> healthStatus = new ConcurrentHashMap<>();
+    private volatile boolean initialElectionDone = false;
 
     public ActiveClusterManager(KafkaClusterProperties properties,
                                 ApplicationEventPublisher eventPublisher) {
@@ -48,10 +49,10 @@ public class ActiveClusterManager {
         for (String name : clustersByPriority) {
             failureCounts.put(name, new AtomicInteger(0));
             successCounts.put(name, new AtomicInteger(0));
-            healthStatus.put(name, true);
+            healthStatus.put(name, false);
         }
 
-        log.info("Cluster priority order: {}, active: {}", clustersByPriority, activeCluster);
+        log.info("Cluster priority order: {}, initial: {}", clustersByPriority, activeCluster);
     }
 
     public void reportHealth(String clusterName, boolean healthy) {
@@ -72,13 +73,21 @@ public class ActiveClusterManager {
             failureCounts.get(clusterName).set(0);
 
             if (!healthStatus.get(clusterName)) {
-                int successes = successCounts.get(clusterName).incrementAndGet();
-                log.info("Cluster '{}' recovery check passed ({}/{})", clusterName, successes, recoveryThreshold);
-
-                if (successes >= recoveryThreshold) {
+                // Skip recovery threshold on initial startup — elect immediately
+                if (!initialElectionDone) {
                     healthStatus.put(clusterName, true);
-                    log.info(">>> Cluster '{}' marked HEALTHY <<<", clusterName);
+                    log.info(">>> Cluster '{}' marked HEALTHY (initial) <<<", clusterName);
                     reelectActive();
+                    initialElectionDone = true;
+                } else {
+                    int successes = successCounts.get(clusterName).incrementAndGet();
+                    log.info("Cluster '{}' recovery check passed ({}/{})", clusterName, successes, recoveryThreshold);
+
+                    if (successes >= recoveryThreshold) {
+                        healthStatus.put(clusterName, true);
+                        log.info(">>> Cluster '{}' marked HEALTHY <<<", clusterName);
+                        reelectActive();
+                    }
                 }
             }
         }
@@ -90,7 +99,7 @@ public class ActiveClusterManager {
         for (String candidate : clustersByPriority) {
             if (healthStatus.getOrDefault(candidate, false)) {
                 activeCluster = candidate;
-                if (!candidate.equals(previous)) {
+                if (!candidate.equals(previous) || !initialElectionDone) {
                     log.warn(">>> CLUSTER SWITCH: '{}' -> '{}' <<<", previous, candidate);
                     eventPublisher.publishEvent(new ClusterSwitchedEvent(this, previous, candidate));
                 }

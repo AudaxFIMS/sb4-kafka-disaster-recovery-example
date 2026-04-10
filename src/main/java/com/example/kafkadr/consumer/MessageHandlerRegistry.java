@@ -26,7 +26,7 @@ public class MessageHandlerRegistry {
     private final ObjectMapper objectMapper;
 
     private final Consumer<Message<?>> defaultHandler =
-            msg -> log.info("[unhandled] Received: {}", msg.getPayload());
+            msg -> log.info("[unhandled] Received message, messageId={}", msg.getHeaders().get("message-id"));
 
     public MessageHandlerRegistry(MessageProcessor processor,
                                   KafkaClusterProperties properties) {

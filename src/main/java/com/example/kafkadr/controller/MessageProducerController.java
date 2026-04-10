@@ -32,7 +32,7 @@ public class MessageProducerController {
             @RequestParam(required = false) String messageId) {
 
         ResilientProducer.SendResult result = producer.send(topic, message, messageId);
-        return toResponse(result, topic, message);
+        return toResponse(result, topic);
     }
 
     /** Send a JSON payload (content-type: json) */
@@ -43,7 +43,7 @@ public class MessageProducerController {
             @RequestParam(required = false) String messageId) {
 
         ResilientProducer.SendResult result = producer.send(topic, payload, messageId);
-        return toResponse(result, topic, payload);
+        return toResponse(result, topic);
     }
 
     /** Send raw bytes (content-type: bytes) */
@@ -54,7 +54,7 @@ public class MessageProducerController {
             @RequestParam(required = false) String messageId) {
 
         ResilientProducer.SendResult result = producer.send(topic, payload, messageId);
-        return toResponse(result, topic, payload.length + " bytes");
+        return toResponse(result, topic);
     }
 
     /** Send a test Avro PaymentEvent (content-type: native) */
@@ -77,7 +77,7 @@ public class MessageProducerController {
                 .build();
 
         ResilientProducer.SendResult result = producer.send("payment-events", event, messageId);
-        return toResponse(result, "payment-events", event.toString());
+        return toResponse(result, "payment-events");
     }
 
     @GetMapping("/status")
@@ -90,13 +90,12 @@ public class MessageProducerController {
     }
 
     private ResponseEntity<Map<String, Object>> toResponse(
-            ResilientProducer.SendResult result, String topic, Object payload) {
+            ResilientProducer.SendResult result, String topic) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("status", result.success() ? "sent" : "failed");
         response.put("cluster", result.cluster() != null ? result.cluster() : "none");
         response.put("topic", topic);
         response.put("messageId", result.messageId());
-        response.put("payload", payload);
 
         if (result.success()) {
             return ResponseEntity.ok(response);

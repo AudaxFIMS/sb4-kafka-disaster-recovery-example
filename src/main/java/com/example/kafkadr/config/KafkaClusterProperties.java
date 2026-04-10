@@ -15,6 +15,9 @@ public class KafkaClusterProperties {
     private List<ConsumerConfig> consumers = List.of();
     private List<ProducerConfig> producers = List.of();
     private Map<String, Object> defaultEnvironment = new LinkedHashMap<>();
+    private Map<String, Object> defaultConsumerProperties = new LinkedHashMap<>();
+    private Map<String, Object> defaultProducerProperties = new LinkedHashMap<>();
+    private boolean autoCreateTopics = false;
     private HealthCheckConfig healthCheck = new HealthCheckConfig();
     private IdempotencyConfig idempotency = new IdempotencyConfig();
 
@@ -26,6 +29,12 @@ public class KafkaClusterProperties {
     public void setProducers(List<ProducerConfig> producers) { this.producers = producers; }
     public Map<String, Object> getDefaultEnvironment() { return defaultEnvironment; }
     public void setDefaultEnvironment(Map<String, Object> defaultEnvironment) { this.defaultEnvironment = defaultEnvironment; }
+    public Map<String, Object> getDefaultConsumerProperties() { return defaultConsumerProperties; }
+    public void setDefaultConsumerProperties(Map<String, Object> defaultConsumerProperties) { this.defaultConsumerProperties = defaultConsumerProperties; }
+    public Map<String, Object> getDefaultProducerProperties() { return defaultProducerProperties; }
+    public void setDefaultProducerProperties(Map<String, Object> defaultProducerProperties) { this.defaultProducerProperties = defaultProducerProperties; }
+    public boolean isAutoCreateTopics() { return autoCreateTopics; }
+    public void setAutoCreateTopics(boolean autoCreateTopics) { this.autoCreateTopics = autoCreateTopics; }
     public HealthCheckConfig getHealthCheck() { return healthCheck; }
     public void setHealthCheck(HealthCheckConfig healthCheck) { this.healthCheck = healthCheck; }
     public IdempotencyConfig getIdempotency() { return idempotency; }
@@ -58,7 +67,6 @@ public class KafkaClusterProperties {
         /**
          * Payload content type. Controls how byte[] from Kafka is converted
          * to the handler's Message<T> payload type.
-         *
          * - "json"   — deserialize via Jackson ObjectMapper (default)
          * - "string" — convert byte[] to String (UTF-8)
          * - "bytes"  — pass byte[] as-is, no conversion
@@ -68,11 +76,12 @@ public class KafkaClusterProperties {
         private String contentType = "json";
 
         /**
-         * Additional Kafka consumer properties for this topic's bindings.
-         * Useful for per-topic deserializer overrides (e.g. Avro).
-         * Maps to spring.cloud.stream.kafka.bindings.{binding}.consumer.configuration.*
+         * Per-consumer properties, merged on top of kafka-dr.default-consumer-properties.
+         * Supports both Spring Cloud Stream consumer properties
+         * and Kafka client properties under "configuration" key (e.g. configuration.value.deserializer).
+         * Maps to spring.cloud.stream.kafka.bindings.{binding}.consumer.*
          */
-        private Map<String, String> properties = new LinkedHashMap<>();
+        private Map<String, Object> properties = new LinkedHashMap<>();
 
         public String getTopic() { return topic; }
         public void setTopic(String topic) { this.topic = topic; }
@@ -82,8 +91,8 @@ public class KafkaClusterProperties {
         public void setHandler(String handler) { this.handler = handler; }
         public String getContentType() { return contentType; }
         public void setContentType(String contentType) { this.contentType = contentType; }
-        public Map<String, String> getProperties() { return properties; }
-        public void setProperties(Map<String, String> properties) { this.properties = properties; }
+        public Map<String, Object> getProperties() { return properties; }
+        public void setProperties(Map<String, Object> properties) { this.properties = properties; }
     }
 
     /**
@@ -103,17 +112,19 @@ public class KafkaClusterProperties {
         private String contentType = "json";
 
         /**
-         * Additional Kafka producer properties for this topic.
-         * Maps to spring.cloud.stream.kafka.bindings.{binding}.producer.configuration.*
+         * Per-producer properties, merged on top of kafka-dr.default-producer-properties.
+         * Supports both Spring Cloud Stream producer properties (e.g. sync)
+         * and Kafka client properties under "configuration" key (e.g. configuration.acks).
+         * Maps to spring.cloud.stream.kafka.bindings.{binding}.producer.*
          */
-        private Map<String, String> properties = new LinkedHashMap<>();
+        private Map<String, Object> properties = new LinkedHashMap<>();
 
         public String getTopic() { return topic; }
         public void setTopic(String topic) { this.topic = topic; }
         public String getContentType() { return contentType; }
         public void setContentType(String contentType) { this.contentType = contentType; }
-        public Map<String, String> getProperties() { return properties; }
-        public void setProperties(Map<String, String> properties) { this.properties = properties; }
+        public Map<String, Object> getProperties() { return properties; }
+        public void setProperties(Map<String, Object> properties) { this.properties = properties; }
     }
 
     public static class HealthCheckConfig {
@@ -140,6 +151,28 @@ public class KafkaClusterProperties {
         public void setTtlSeconds(long ttlSeconds) { this.ttlSeconds = ttlSeconds; }
         public String getKeyPrefix() { return keyPrefix; }
         public void setKeyPrefix(String keyPrefix) { this.keyPrefix = keyPrefix; }
+    }
+
+    /**
+     * Returns merged consumer properties: default-consumer-properties + per-consumer overrides.
+     * Flattened to dot-notation keys.
+     */
+    public Map<String, String> getEffectiveConsumerProperties(ConsumerConfig consumer) {
+        Map<String, String> merged = new LinkedHashMap<>();
+        flatten("", defaultConsumerProperties, merged);
+        flatten("", consumer.getProperties(), merged);
+        return merged;
+    }
+
+    /**
+     * Returns merged producer properties: default-producer-properties + per-producer overrides.
+     * Flattened to dot-notation keys.
+     */
+    public Map<String, String> getEffectiveProducerProperties(ProducerConfig producer) {
+        Map<String, String> merged = new LinkedHashMap<>();
+        flatten("", defaultProducerProperties, merged);
+        flatten("", producer.getProperties(), merged);
+        return merged;
     }
 
     /**

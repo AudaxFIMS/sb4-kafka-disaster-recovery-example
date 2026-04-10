@@ -1,6 +1,7 @@
 package com.example.kafkadr.routing;
 
 import com.example.kafkadr.config.KafkaClusterProperties;
+import com.example.kafkadr.config.StartupClusterState;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.stream.binding.BindingsLifecycleController;
@@ -14,8 +15,7 @@ import java.util.*;
 
 /**
  * Manages both consumer (input) and producer (output) bindings on cluster switch.
- * - Stops/starts consumer bindings via BindingsLifecycleController
- * - Clears StreamBridge's cached output channels so dead producers stop reconnecting
+ * Supports both startup-initialized and late-initialized clusters.
  */
 @Component
 public class BindingLifecycleManager {
@@ -24,13 +24,21 @@ public class BindingLifecycleManager {
 
     private final BindingsLifecycleController bindingsController;
     private final StreamBridge streamBridge;
+    private final StartupClusterState startupState;
+    private final LateBindingInitializer lateBindingInitializer;
     private final Map<String, List<String>> inputBindingsByCluster;
+    private final Set<String> startupClusters;
 
     public BindingLifecycleManager(BindingsLifecycleController bindingsController,
                                    StreamBridge streamBridge,
-                                   KafkaClusterProperties properties) {
+                                   KafkaClusterProperties properties,
+                                   StartupClusterState startupState,
+                                   LateBindingInitializer lateBindingInitializer) {
         this.bindingsController = bindingsController;
         this.streamBridge = streamBridge;
+        this.startupState = startupState;
+        this.lateBindingInitializer = lateBindingInitializer;
+        this.startupClusters = Set.copyOf(startupState.getInitializedClusters());
         this.inputBindingsByCluster = buildInputBindingIndex(properties);
         log.info("Input bindings by cluster: {}", inputBindingsByCluster);
     }
@@ -48,31 +56,44 @@ public class BindingLifecycleManager {
     }
 
     private void stopInputBindings(String cluster) {
-        for (String binding : inputBindingsByCluster.getOrDefault(cluster, List.of())) {
-            try {
-                bindingsController.changeState(binding, State.STOPPED);
-                log.info("Stopped input binding: {}", binding);
-            } catch (Exception e) {
-                log.error("Failed to stop input binding '{}': {}", binding, e.getMessage());
+        if (startupClusters.contains(cluster)) {
+            // Startup-initialized: use BindingsLifecycleController
+            for (String binding : inputBindingsByCluster.getOrDefault(cluster, List.of())) {
+                try {
+                    bindingsController.changeState(binding, State.STOPPED);
+                    log.info("Stopped input binding: {}", binding);
+                } catch (Exception e) {
+                    log.error("Failed to stop input binding '{}': {}", binding, e.getMessage());
+                }
             }
+        } else if (startupState.isInitialized(cluster)) {
+            // Late-initialized: use LateBindingInitializer
+            lateBindingInitializer.stopBindings(cluster);
         }
     }
 
     private void startInputBindings(String cluster) {
-        for (String binding : inputBindingsByCluster.getOrDefault(cluster, List.of())) {
-            try {
-                bindingsController.changeState(binding, State.STARTED);
-                log.info("Started input binding: {}", binding);
-            } catch (Exception e) {
-                log.error("Failed to start input binding '{}': {}", binding, e.getMessage());
+        if (!startupState.isInitialized(cluster)) {
+            log.warn("Cluster '{}' not yet initialized, cannot start bindings", cluster);
+            return;
+        }
+
+        if (startupClusters.contains(cluster)) {
+            // Startup-initialized: use BindingsLifecycleController
+            for (String binding : inputBindingsByCluster.getOrDefault(cluster, List.of())) {
+                try {
+                    bindingsController.changeState(binding, State.STARTED);
+                    log.info("Started input binding: {}", binding);
+                } catch (Exception e) {
+                    log.error("Failed to start input binding '{}': {}", binding, e.getMessage());
+                }
             }
+        } else {
+            // Late-initialized: use LateBindingInitializer
+            lateBindingInitializer.startBindings(cluster);
         }
     }
 
-    /**
-     * Clears StreamBridge's internal channel cache for entries belonging to the given binder.
-     * This closes the underlying Kafka producers so they stop reconnecting to the dead cluster.
-     */
     private void clearProducerCache(String cluster) {
         try {
             Field channelCacheField = StreamBridge.class.getDeclaredField("channelCache");
@@ -92,13 +113,8 @@ public class BindingLifecycleManager {
                 channelCache.remove(key);
                 log.info("Removed cached producer channel: {}", key);
             }
-
-            if (keysToRemove.isEmpty()) {
-                log.debug("No cached producer channels found for cluster '{}'", cluster);
-            }
         } catch (NoSuchFieldException e) {
-            log.warn("StreamBridge.channelCache field not found — producer cache cleanup skipped. "
-                    + "This may happen with a different Spring Cloud Stream version.");
+            log.warn("StreamBridge.channelCache field not found — producer cache cleanup skipped.");
         } catch (Exception e) {
             log.error("Failed to clear producer cache for cluster '{}': {}", cluster, e.getMessage());
         }
@@ -106,7 +122,6 @@ public class BindingLifecycleManager {
 
     private Map<String, List<String>> buildInputBindingIndex(KafkaClusterProperties properties) {
         Map<String, List<String>> index = new HashMap<>();
-
         for (String cluster : properties.getClusters().keySet()) {
             List<String> bindings = new ArrayList<>();
             for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers()) {
@@ -114,7 +129,6 @@ public class BindingLifecycleManager {
             }
             index.put(cluster, bindings);
         }
-
         return index;
     }
 }

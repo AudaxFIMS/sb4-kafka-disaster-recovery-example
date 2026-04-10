@@ -14,30 +14,24 @@ public class MessageProcessor {
 
     /** content-type: string — payload arrives as String */
     public void processDemoEvent(Message<String> message) {
-        String text = message.getPayload();
-        log.info("[demo-events] text={}", text);
+        log.info("[demo-events] messageId={}", message.getHeaders().get("message-id"));
     }
 
     /** content-type: json — payload deserialized from JSON via Jackson */
     public void processOrder(Message<OrderEvent> message) {
         OrderEvent order = message.getPayload();
-        log.info("[order-events] order={}", order);
+        log.info("[order-events] messageId={}, orderId={}", message.getHeaders().get("message-id"), order.getOrderId());
     }
 
     /** content-type: native — payload deserialized by KafkaAvroDeserializer */
     public void processPayment(Message<PaymentEvent> message) {
         PaymentEvent payment = message.getPayload();
-        log.info("[payment-events] paymentId={}, orderId={}, amount={} {}, status={}",
-                payment.getPaymentId(),
-                payment.getOrderId(),
-                payment.getAmount(),
-                payment.getCurrency(),
-                payment.getStatus());
+        log.info("[payment-events] messageId={}, paymentId={}", message.getHeaders().get("message-id"), payment.getPaymentId());
     }
 
     /** content-type: bytes — raw byte[] payload, no conversion */
     public void processRawData(Message<byte[]> message) {
         byte[] data = message.getPayload();
-        log.info("[raw-telemetry] received {} bytes", data.length);
+        log.info("[raw-telemetry] messageId={}, size={} bytes", message.getHeaders().get("message-id"), data.length);
     }
 }

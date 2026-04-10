@@ -1,5 +1,6 @@
 package com.example.kafkadr.producer;
 
+import com.example.kafkadr.config.KafkaClusterProperties;
 import com.example.kafkadr.routing.ActiveClusterManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -7,6 +8,12 @@ import org.springframework.cloud.stream.function.StreamBridge;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.stereotype.Component;
+
+import org.apache.kafka.common.errors.BrokerNotAvailableException;
+import org.apache.kafka.common.errors.DisconnectException;
+import org.apache.kafka.common.errors.NetworkException;
+import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.errors.TimeoutException;
 
 import java.time.Instant;
 import java.util.HashSet;
@@ -20,10 +27,13 @@ public class ResilientProducer {
 
     private final StreamBridge streamBridge;
     private final ActiveClusterManager clusterManager;
+    private final int maxRetries;
 
-    public ResilientProducer(StreamBridge streamBridge, ActiveClusterManager clusterManager) {
+    public ResilientProducer(StreamBridge streamBridge, ActiveClusterManager clusterManager,
+                             KafkaClusterProperties properties) {
         this.streamBridge = streamBridge;
         this.clusterManager = clusterManager;
+        this.maxRetries = properties.getHealthCheck().getFailureThreshold();
     }
 
     /**
@@ -44,13 +54,27 @@ public class ResilientProducer {
                 break;
             }
 
-            if (trySend(topic, cluster, payload, id)) {
-                return new SendResult(true, cluster, id);
+            try {
+                SendOutcome outcome = trySendWithRetries(topic, cluster, payload, id);
+                switch (outcome) {
+                    case SUCCESS:
+                        return new SendResult(true, cluster, id);
+                    case CLUSTER_UNAVAILABLE:
+                        triedClusters.add(cluster);
+                        log.warn("Cluster '{}' unavailable, forcing failover", cluster);
+                        clusterManager.forceUnhealthy(cluster);
+                        break;
+                    case RETRIES_EXHAUSTED:
+                        triedClusters.add(cluster);
+                        log.warn("All {} retries exhausted for cluster '{}', forcing failover", maxRetries, cluster);
+                        clusterManager.forceUnhealthy(cluster);
+                        break;
+                }
+            } catch (SerializationException e) {
+                log.warn("Serialization error, skipping publish: topic={}, messageId={}, error={}",
+                        topic, id, e.getMessage());
+                return new SendResult(false, cluster, id);
             }
-
-            triedClusters.add(cluster);
-            log.warn("Send to cluster '{}' failed, forcing failover", cluster);
-            clusterManager.forceUnhealthy(cluster);
         }
 
         log.error("All {} clusters unavailable. topic={}, messageId={}",
@@ -58,22 +82,59 @@ public class ResilientProducer {
         return new SendResult(false, null, id);
     }
 
-    private boolean trySend(String topic, String cluster, Object payload, String messageId) {
-        try {
-            Message<?> message = MessageBuilder.withPayload(payload)
-                    .setHeader("message-id", messageId)
-                    .setHeader("source-cluster", cluster)
-                    .setHeader("sent-at", Instant.now().toString())
-                    .build();
+    private SendOutcome trySendWithRetries(String topic, String cluster, Object payload, String messageId) {
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                Message<?> message = MessageBuilder.withPayload(payload)
+                        .setHeader("message-id", messageId)
+                        .setHeader("source-cluster", cluster)
+                        .setHeader("sent-at", Instant.now().toString())
+                        .build();
 
-            return streamBridge.send(topic, cluster, message);
-        } catch (Exception e) {
-            log.warn("Send to cluster '{}' failed: {} - {}", cluster, e.getClass().getSimpleName(), e.getMessage());
-            if (e.getCause() != null) {
-                log.warn("  Caused by: {} - {}", e.getCause().getClass().getSimpleName(), e.getCause().getMessage());
+                if (streamBridge.send(topic, cluster, message)) {
+                    return SendOutcome.SUCCESS;
+                }
+                log.warn("StreamBridge returned false for cluster '{}'", cluster);
+                return SendOutcome.CLUSTER_UNAVAILABLE;
+            } catch (Exception e) {
+                if (isSerializationError(e)) {
+                    throw (e instanceof SerializationException se) ? se : new SerializationException(e.getMessage(), e);
+                }
+                if (isClusterUnavailable(e)) {
+                    log.warn("Cluster '{}' unavailable: {} - {}", cluster, e.getClass().getSimpleName(), e.getMessage());
+                    return SendOutcome.CLUSTER_UNAVAILABLE;
+                }
+                log.warn("Attempt {}/{} to cluster '{}' failed: {} - {}",
+                        attempt, maxRetries, cluster, e.getClass().getSimpleName(), e.getMessage());
             }
-            return false;
         }
+        return SendOutcome.RETRIES_EXHAUSTED;
+    }
+
+    private enum SendOutcome { SUCCESS, CLUSTER_UNAVAILABLE, RETRIES_EXHAUSTED }
+
+    private boolean isSerializationError(Throwable e) {
+        while (e != null) {
+            if (e instanceof SerializationException) {
+                return true;
+            }
+            e = e.getCause();
+        }
+        return false;
+    }
+
+    private boolean isClusterUnavailable(Throwable e) {
+        while (e != null) {
+            if (e instanceof TimeoutException
+                    || e instanceof NetworkException
+                    || e instanceof DisconnectException
+                    || e instanceof BrokerNotAvailableException
+                    || e instanceof java.net.ConnectException) {
+                return true;
+            }
+            e = e.getCause();
+        }
+        return false;
     }
 
     public record SendResult(boolean success, String cluster, String messageId) {}

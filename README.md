@@ -8,39 +8,43 @@ A production-ready example of **active-passive disaster recovery** across N Kafk
 ## Architecture
 
 ```
-                        +-------------------+
-                        |   Application     |
-                        |                   |
+                        +--------------------+
+                        |   Application      |
+                        |                    |
                         | ResilientProducer  |-----> Active Cluster
                         | IdempotentConsumer |<----- Active Cluster
-                        |                   |
-                        | ActiveCluster     |
-                        |   Manager         |
-                        |      |            |
-                        | ClusterHealth     |
-                        |   Checker         |
-                        +------|------------+
+                        |                    |
+                        | ActiveCluster      |
+                        |   Manager          |
+                        |      |             |
+                        | ClusterHealth      |
+                        |   Checker          |
+                        +------|-------------+
                                |
               +----------------+----------------+
               |                |                |
-        +-----v-----+   +-----v-----+   +------v----+
-        |  Kafka     |   |  Kafka     |   |  Kafka    |
-        |  Primary   |   |  Secondary |   |  Tertiary |
-        | priority=1 |   | priority=2 |   | priority=3|
-        +-----------+   +-----------+   +-----------+
+        +-----v------+   +-----v------+   +------v-----+
+        |  Kafka     |   |  Kafka     |   |  Kafka     |
+        |  Primary   |   |  Secondary |   |  Tertiary  |
+        | priority=1 |   | priority=2 |   | priority=3 |
+        +------------+   +------------+   +------------+
 ```
 
 ## Features
 
 - **N-cluster support** -- configure any number of Kafka clusters with priority-based failover
-- **Automatic failover** -- health checker detects failures; producer triggers instant failover on send failure
-- **Automatic failback** -- returns to the highest-priority healthy cluster
+- **Automatic failover** -- health checker detects failures; producer triggers instant failover on send failure with error classification (serialization / cluster unavailable / transient) and configurable retries
+- **Automatic failback** -- returns to the highest-priority healthy cluster when it recovers
+- **Resilient startup** -- application starts instantly even if some clusters are down; unreachable clusters are initialized dynamically when they come online (no restart required)
+- **Late binding initialization** -- clusters that were unavailable at startup get binders, consumer bindings, and topic provisioning created automatically once reachable
+- **Synchronous send with ACK** -- `sync: true` + `acks: all` ensures broker acknowledgement before returning success, preventing silent message loss
 - **Consumer binding management** -- only the active cluster's consumers are running; others are stopped
 - **Producer cache cleanup** -- dead cluster producers are closed to prevent reconnect noise
 - **Idempotent message processing** -- Redis-based deduplication prevents duplicate processing during failover
 - **Multi-format support** -- String, JSON, Avro, and raw bytes payloads with per-topic configuration
 - **Fully dynamic configuration** -- clusters, consumers, and producers are defined in YAML; no code changes needed to add topics or clusters
 - **Per-topic handler mapping** -- business logic methods are mapped to topics via configuration
+- **Unified property model** -- consumers and producers use the same `default-*-properties` + per-topic `properties` merge pattern with `configuration:` for Kafka client properties
 
 ## Project Structure
 
@@ -49,20 +53,24 @@ src/main/
   avro/
     PaymentEvent.avsc                  # Avro schema (generates Java class)
   java/com/example/kafkadr/
-    KafkaDrExampleApplication.java     # Entry point
+    KafkaDrExampleApplication.java     # Entry point (excludes KafkaAutoConfiguration)
     config/
       KafkaClusterProperties.java      # Configuration model (clusters, consumers, producers)
+      KafkaAdminHelper.java            # Shared AdminClient utilities (probe, topic provisioning)
       DynamicBindingRegistrar.java     # Generates binders, bindings, and consumer beans
+      StartupClusterState.java         # Tracks which clusters were initialized
     consumer/
       IdempotentConsumer.java          # Deduplication wrapper (Message<?>)
       MessageHandlerRegistry.java      # Maps topics to handler methods with payload conversion
       MessageProcessor.java            # Business logic methods (add your handlers here)
+    controller/
+      MessageProducerController.java   # REST API for all payload types
     producer/
       ResilientProducer.java           # Send with automatic failover across clusters
-      MessageProducerController.java   # REST API for all payload types
     routing/
       ActiveClusterManager.java        # Cluster election state machine
       BindingLifecycleManager.java     # Start/stop consumer + producer bindings on switch
+      LateBindingInitializer.java      # Dynamically creates bindings for recovered clusters
       ClusterSwitchedEvent.java        # Spring event published on failover/failback
     health/
       ClusterHealthChecker.java        # Periodic health probe for all clusters
@@ -74,7 +82,7 @@ src/main/
       OrderEvent.java                  # Sample JSON POJO
   resources/
     application.yml                    # All configuration in one place
-docker-compose.yml                     # 3 Kafka clusters + Schema Registry + Redis
+docker-compose.yml                     # 3 Kafka clusters + Schema Registry (all brokers) + Redis
 ```
 
 ## Quick Start
@@ -138,6 +146,25 @@ curl -X POST 'localhost:8080/api/messages/demo-events?message=on+tertiary'
 docker-compose start kafka-primary kafka-secondary
 ```
 
+### Test Startup with Dead Cluster
+
+```bash
+# Stop primary before starting the app
+docker-compose stop kafka-primary
+
+# Start the app -- starts instantly on secondary, no blocking
+mvn clean spring-boot:run
+
+# Verify: app is on secondary
+curl -s localhost:8080/api/messages/status | jq
+
+# Restore primary -- app auto-initializes and fails back
+docker-compose start kafka-primary
+
+# After ~15-20s (recovery threshold), verify failback
+curl -s localhost:8080/api/messages/status | jq
+```
+
 ## Configuration
 
 Everything is configured under the `kafka-dr` prefix. Binders, bindings, and function definitions are generated automatically at startup.
@@ -167,21 +194,35 @@ Applied to all clusters. Per-cluster `environment` overrides these defaults. Str
 kafka-dr:
   default-environment:
     spring.cloud.stream.kafka.binder:
-      auto-create-topics: true
+      auto-create-topics: false
       replication-factor: 3
       configuration:
         security.protocol: SSL
         ssl.truststore.location: /certs/truststore.p12
         ssl.truststore.password: ${TRUSTSTORE_PASSWORD}
+        request.timeout.ms: 5000
+        default.api.timeout.ms: 10000
+        socket.connection.setup.timeout.ms: 3000
       consumer-properties:
         max.poll.records: 500
-      producer-properties:
-        acks: all
+```
+
+> **Note:** The binder-level `auto-create-topics` is set to `false` in `default-environment` by design. When set to `true`, the Kafka binder calls `AdminClient` during binding initialization for every cluster. If any cluster is unreachable at startup, the `AdminClient` call blocks and prevents the application from starting -- defeating the purpose of DR. Instead, use the application-level `kafka-dr.auto-create-topics: true` flag, which provisions topics asynchronously via `KafkaAdminHelper` -- at startup for reachable clusters and later for recovered clusters.
+
+### Default Consumer Properties
+
+Applied to all consumers. Per-consumer `properties` override these defaults. Structure maps to `spring.cloud.stream.kafka.bindings.<binding>.consumer.*`:
+
+```yaml
+kafka-dr:
+  default-consumer-properties:
+    configuration:
+      max.poll.records: 500
 ```
 
 ### Consumers
 
-Each consumer gets an input binding on every cluster. Only the active cluster's bindings are running.
+Each consumer gets an input binding on every cluster. Only the active cluster's bindings are running. Per-consumer `properties` are merged on top of `default-consumer-properties`.
 
 ```yaml
 kafka-dr:
@@ -190,8 +231,15 @@ kafka-dr:
       group: my-group
       handler: processOrder          # Method name in MessageProcessor
       content-type: json             # json | string | bytes | native
-      properties:                    # Per-topic Kafka consumer properties
-        max.poll.records: "100"
+
+    - topic: payment-events
+      group: my-group
+      handler: processPayment
+      content-type: native
+      properties:                    # Merged on top of default-consumer-properties
+        configuration:               # Kafka client properties go under "configuration"
+          value.deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+          specific.avro.reader: "true"
 ```
 
 **Content types:**
@@ -203,9 +251,24 @@ kafka-dr:
 | `native` | No conversion; Kafka deserializer handles it | Avro, Protobuf |
 | `bytes` | No conversion; raw `byte[]` | Binary data |
 
+### Default Producer Properties
+
+Applied to all producers. Per-producer `properties` override these defaults. Structure maps to `spring.cloud.stream.kafka.bindings.<binding>.producer.*`:
+
+```yaml
+kafka-dr:
+  default-producer-properties:
+    sync: true                        # Block until broker ACK (prevents silent message loss)
+    configuration:
+      acks: all                       # Wait for all in-sync replicas
+      max.block.ms: 5000              # Max time to block on metadata fetch
+      delivery.timeout.ms: 10000      # Max time for end-to-end delivery
+      request.timeout.ms: 5000        # Max time for broker response
+```
+
 ### Producers
 
-Independent from consumers. Each producer generates output binding properties for StreamBridge.
+Independent from consumers. Each producer generates output binding properties for StreamBridge. Per-producer `properties` are merged on top of `default-producer-properties`.
 
 ```yaml
 kafka-dr:
@@ -215,9 +278,25 @@ kafka-dr:
 
     - topic: payment-events
       content-type: native
-      properties:
-        value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      properties:                        # Merged on top of default-producer-properties
+        configuration:                   # Kafka client properties go under "configuration"
+          value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
 ```
+
+### Topic Provisioning
+
+Application-level topic creation, independent of the binder's `auto-create-topics`. Controlled by `kafka-dr.auto-create-topics` (default: `false`):
+
+```yaml
+kafka-dr:
+  auto-create-topics: true    # false in production, true in development
+```
+
+When enabled, topics are created asynchronously:
+- At startup: `DynamicBindingRegistrar` provisions topics on reachable clusters
+- At runtime: `LateBindingInitializer` provisions topics on clusters that recover after startup
+
+Both use `KafkaAdminHelper` to avoid code duplication.
 
 ### Health Check & Failover Tuning
 
@@ -227,6 +306,7 @@ kafka-dr:
     interval-ms: 5000       # How often to probe each cluster
     timeout-ms: 3000         # AdminClient timeout per probe
     failure-threshold: 3     # Consecutive failures before marking unhealthy
+                             # Also used as retry count for non-critical send errors
     recovery-threshold: 3    # Consecutive successes before marking healthy
 ```
 
@@ -292,6 +372,21 @@ No bean registration, no binding configuration, no binder setup needed.
 
 ## How Failover Works
 
+### Startup
+
+```
+1. DynamicBindingRegistrar probes all clusters (3s timeout each)
+2. Reachable clusters: binders, bindings, and function beans created
+3. Unreachable clusters: only environment properties generated (no binder child context)
+4. All consumer bindings start with auto-startup=false
+5. All clusters begin as UNHEALTHY
+6. First health check: first healthy cluster elected immediately (no recovery threshold)
+7. ClusterSwitchedEvent -> BindingLifecycleManager starts consumers on elected cluster
+8. LateBindingInitializer monitors unreachable clusters in background
+```
+
+### Normal Failover
+
 ```
 Normal operation:
   Producer  ---> primary (priority=1)
@@ -314,6 +409,46 @@ Primary recovers:
   2. reelectActive() -> picks "primary" (priority=1, healthy again)
   3. Bindings switch back automatically
 ```
+
+### Late Cluster Initialization
+
+When a cluster was unreachable at startup and later becomes available:
+
+```
+1. LateBindingInitializer detects cluster is reachable (periodic probe)
+2. Creates binder via BinderFactory (child context initialized)
+3. Creates consumer bindings with proper Kafka properties (deserializers, native decoding)
+4. Topics are provisioned if auto-create-topics is enabled
+5. If cluster is already the active one -> starts consumer bindings immediately
+6. Cluster is now fully available for failover/failback
+```
+
+### Producer Error Handling
+
+`ResilientProducer` classifies send errors into three categories:
+
+| Error type | Examples | Behavior |
+|---|---|---|
+| **Serialization** | `SerializationException` | Warn log, skip publish, cluster stays healthy |
+| **Cluster unavailable** | `TimeoutException`, `NetworkException`, `DisconnectException`, `BrokerNotAvailableException`, `ConnectException` | Immediate `forceUnhealthy` + failover to next cluster |
+| **Other errors** | Any non-serialization, non-connectivity exception | Retry up to `failure-threshold` times (default 3), then `forceUnhealthy` + failover |
+
+Synchronous send (`sync: true`) ensures the broker ACK is received before returning success, preventing silent message loss when a broker goes down after the message enters the producer buffer.
+
+## Key Design Decisions
+
+| Decision | Rationale |
+|---|---|
+| `KafkaAutoConfiguration` excluded | Prevents Spring Boot from creating a default `KafkaAdmin` pointing to `localhost:9092`, which blocks startup when no broker is running locally |
+| `auto-create-topics: false` | Binder's `AdminClient` blocks during binding initialization if broker is unreachable; topic creation is handled asynchronously by `DynamicBindingRegistrar` (at startup) and `LateBindingInitializer` (for recovered clusters) when enabled |
+| All consumers `auto-startup: false` | Prevents Kafka consumer metadata fetch from blocking the main thread during startup; `BindingLifecycleManager` starts consumers after health check elects an active cluster |
+| All clusters start as `UNHEALTHY` | First health check immediately elects the first reachable cluster (no `recoveryThreshold` wait); subsequent recovery requires full threshold |
+| Binder configs for all clusters, bindings only for reachable | Binder child context creation is what blocks; having config properties in the environment is safe |
+| Kafka client timeouts in `default-environment` | `request.timeout.ms`, `socket.connection.setup.timeout.ms` etc. ensure fast failure instead of 60s+ default timeouts |
+| Noisy Kafka client logs suppressed | `AdminMetadataManager`, `Metadata`, `NetworkClient` set to ERROR; `LoggingProducerListener` disabled to prevent payload leaking in logs |
+| Payload excluded from API responses and logs | Prevents sensitive data leakage; only messageId and metadata are returned/logged |
+| Schema Registry configured with all brokers | `KAFKASTORE_BOOTSTRAP_SERVERS` includes all clusters so SR can register schemas even when primary is down |
+| `KafkaAdminHelper` shared utility | Consolidates AdminClient probe, topic provisioning, and client creation logic — eliminates duplication across `DynamicBindingRegistrar`, `LateBindingInitializer`, and `ClusterHealthChecker` |
 
 ## Tech Stack
 

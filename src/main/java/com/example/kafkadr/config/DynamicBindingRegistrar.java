@@ -42,16 +42,19 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
             return;
         }
 
+        Set<String> reachableClusters = probeAllClusters(props);
+        log.info("Reachable clusters at startup: {}", reachableClusters);
+
         Map<String, Object> generated = new LinkedHashMap<>();
         List<String> functionNames = new ArrayList<>();
 
-        String primaryCluster = props.getClusters().entrySet().stream()
-                .min(Comparator.comparingInt(e -> e.getValue().getPriority()))
-                .map(Map.Entry::getKey)
-                .orElseThrow();
-
+        // Generate binder configs for ALL clusters (just environment properties)
         generateBinders(props, generated);
-        generateConsumerBindings(props, generated, functionNames, primaryCluster);
+        // Generate consumer binding properties for ALL clusters
+        generateConsumerBindingProperties(props, generated);
+        // But only include reachable clusters in function definition
+        // (unreachable clusters get bindings created later by LateBindingInitializer)
+        generateFunctionDefinitions(props, functionNames, reachableClusters);
         generateProducerBindings(props, generated);
 
         if (!functionNames.isEmpty()) {
@@ -61,10 +64,36 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
         environment.getPropertySources().addFirst(
                 new MapPropertySource("kafka-dr-dynamic-bindings", generated));
 
-        log.info("Generated {} consumer bindings, {} producer configs for {} clusters",
-                functionNames.size(), props.getProducers().size(), props.getClusters().size());
+        log.info("Generated bindings for {} reachable clusters, properties for all {} clusters",
+                reachableClusters.size(), props.getClusters().size());
 
+        if (props.isAutoCreateTopics()) {
+            for (String cluster : reachableClusters) {
+                String brokers = props.getClusters().get(cluster).getBootstrapServers();
+                KafkaAdminHelper.provisionTopics(cluster, brokers, props);
+            }
+        }
+
+        // Register function beans for ALL clusters (needed for late binding)
         registerConsumerBeans(registry, props);
+
+        // Store reachable clusters in environment so StartupClusterState can read them
+        generated.put("kafka-dr.internal.initialized-clusters", String.join(",", reachableClusters));
+    }
+
+    private Set<String> probeAllClusters(KafkaClusterProperties props) {
+        Set<String> reachable = new LinkedHashSet<>();
+        for (Map.Entry<String, KafkaClusterProperties.ClusterConfig> entry : props.getClusters().entrySet()) {
+            String name = entry.getKey();
+            String brokers = entry.getValue().getBootstrapServers();
+            if (KafkaAdminHelper.probeCluster(brokers)) {
+                reachable.add(name);
+            } else {
+                log.warn("Cluster '{}' ({}) unreachable at startup — will be initialized when it comes online",
+                        name, brokers);
+            }
+        }
+        return reachable;
     }
 
     private void generateBinders(KafkaClusterProperties props, Map<String, Object> generated) {
@@ -83,10 +112,12 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
         }
     }
 
-    private void generateConsumerBindings(KafkaClusterProperties props,
-                                          Map<String, Object> generated,
-                                          List<String> functionNames,
-                                          String primaryCluster) {
+    /**
+     * Generates binding PROPERTIES for all clusters (destination, group, binder, etc.).
+     * These are just properties in the environment — they don't trigger binder creation.
+     * Binder child contexts are only created when a function references the binding.
+     */
+    private void generateConsumerBindingProperties(KafkaClusterProperties props, Map<String, Object> generated) {
         for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers()) {
             String topic = consumer.getTopic();
 
@@ -95,22 +126,17 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                 String bindingName = functionName + "-in-0";
                 String prefix = "spring.cloud.stream.bindings." + bindingName;
 
-                functionNames.add(functionName);
                 generated.put(prefix + ".destination", topic);
                 generated.put(prefix + ".group", consumer.getGroup());
                 generated.put(prefix + ".binder", cluster);
-
-                if (!cluster.equals(primaryCluster)) {
-                    generated.put(prefix + ".consumer.auto-startup", "false");
-                }
+                generated.put(prefix + ".consumer.auto-startup", "false");
 
                 if ("native".equalsIgnoreCase(consumer.getContentType())) {
                     generated.put(prefix + ".consumer.use-native-decoding", "true");
                 }
 
-                String kafkaPrefix = "spring.cloud.stream.kafka.bindings." + bindingName
-                        + ".consumer.configuration";
-                for (Map.Entry<String, String> prop : consumer.getProperties().entrySet()) {
+                String kafkaPrefix = "spring.cloud.stream.kafka.bindings." + bindingName + ".consumer";
+                for (Map.Entry<String, String> prop : props.getEffectiveConsumerProperties(consumer).entrySet()) {
                     generated.put(kafkaPrefix + "." + prop.getKey(), prop.getValue());
                 }
             }
@@ -118,18 +144,24 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
     }
 
     /**
-     * Generates output binding properties for each producer topic.
-     *
-     * StreamBridge.send(topic, binderName, message) resolves output binding name as the topic name.
-     * We generate properties for "{topic}-out-0" which is what Spring Cloud Stream uses internally.
-     * Additionally, we generate for just "{topic}" to cover StreamBridge's dynamic binding resolution.
+     * Only include reachable clusters in function definition.
+     * Functions for unreachable clusters have beans registered but aren't in the definition,
+     * so Spring Cloud Stream doesn't create their bindings (and doesn't create the binder child context).
      */
+    private void generateFunctionDefinitions(KafkaClusterProperties props,
+                                             List<String> functionNames,
+                                             Set<String> reachableClusters) {
+        for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers()) {
+            for (String cluster : reachableClusters) {
+                functionNames.add(KafkaClusterProperties.functionName(consumer.getTopic(), cluster));
+            }
+        }
+    }
+
     private void generateProducerBindings(KafkaClusterProperties props, Map<String, Object> generated) {
         for (KafkaClusterProperties.ProducerConfig producer : props.getProducers()) {
             String topic = producer.getTopic();
 
-            // StreamBridge creates bindings with name = destination (the topic name)
-            // Generate for both possible binding name patterns
             for (String outBinding : List.of(topic, topic + "-out-0")) {
                 String prefix = "spring.cloud.stream.bindings." + outBinding;
                 generated.put(prefix + ".destination", topic);
@@ -138,14 +170,11 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                     generated.put(prefix + ".producer.use-native-encoding", "true");
                 }
 
-                String kafkaPrefix = "spring.cloud.stream.kafka.bindings." + outBinding
-                        + ".producer.configuration";
-                for (Map.Entry<String, String> prop : producer.getProperties().entrySet()) {
+                String kafkaPrefix = "spring.cloud.stream.kafka.bindings." + outBinding + ".producer";
+                for (Map.Entry<String, String> prop : props.getEffectiveProducerProperties(producer).entrySet()) {
                     generated.put(kafkaPrefix + "." + prop.getKey(), prop.getValue());
                 }
             }
-
-            log.info("Generated producer binding: {} (content-type={})", topic, producer.getContentType());
         }
     }
 
@@ -168,7 +197,6 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                 });
 
                 registry.registerBeanDefinition(beanName, beanDef);
-                log.info("Registered consumer bean: {} (topic={}, cluster={})", beanName, topic, cluster);
             }
         }
     }

@@ -35,8 +35,8 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
         String messageId = msg.getHeaders().get("message-id", String.class);
 
         if (messageId == null) {
-            log.warn("[{}@{}] Message without message-id, processing anyway: {}",
-                    consumerName, clusterName, msg.getPayload());
+            log.warn("[{}@{}] Message without message-id, processing anyway",
+                    consumerName, clusterName);
             delegate.accept(msg);
             return;
         }

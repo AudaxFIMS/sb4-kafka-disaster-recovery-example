@@ -1,10 +1,4 @@
 spring:
-  cloud:
-    stream:
-      kafka:
-        binder:
-          auto-create-topics: true
-          replication-factor: 1
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -13,12 +7,26 @@ spring:
 kafka-dr:
   default-environment:
     spring.cloud.stream.kafka.binder:
-      auto-create-topics: true
+      auto-create-topics: false
       replication-factor: 1
       configuration:
         reconnect.backoff.ms: 1000
         reconnect.backoff.max.ms: 10000
+        request.timeout.ms: 5000
+        default.api.timeout.ms: 10000
+        socket.connection.setup.timeout.ms: 3000
+        socket.connection.setup.timeout.max.ms: 5000
         schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8081}
+
+  auto-create-topics: true
+
+  default-producer-properties:
+    sync: true
+    configuration:
+      acks: all
+      max.block.ms: 5000
+      delivery.timeout.ms: 10000
+      request.timeout.ms: 5000
 
   clusters:
     primary:
@@ -47,8 +55,9 @@ kafka-dr:
       handler: processPayment
       content-type: native
       properties:
-        value.deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
-        specific.avro.reader: "true"
+        configuration:
+          value.deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+          specific.avro.reader: "true"
 
     - topic: raw-telemetry
       group: dr-demo-group
@@ -65,7 +74,8 @@ kafka-dr:
     - topic: payment-events
       content-type: native
       properties:
-        value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+        configuration:
+          value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
 
     - topic: raw-telemetry
       content-type: bytes
@@ -82,6 +92,9 @@ kafka-dr:
 logging:
   level:
     org.apache.kafka.clients.NetworkClient: ERROR
+    org.apache.kafka.clients.admin.internals.AdminMetadataManager: ERROR
+    org.apache.kafka.clients.Metadata: ERROR
+    org.springframework.kafka.support.LoggingProducerListener: OFF
 
 management:
   endpoints:
