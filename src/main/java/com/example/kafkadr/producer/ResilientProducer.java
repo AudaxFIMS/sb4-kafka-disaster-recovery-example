@@ -129,6 +129,7 @@ public class ResilientProducer {
 
     private SendOutcome trySendWithRetries(String topic, String cluster, Message<?> originalMessage,
                                            String messageId) {
+        String bindingName = KafkaClusterProperties.producerBindingName(topic);
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 Message<?> message = MessageBuilder.fromMessage(originalMessage)
@@ -136,7 +137,7 @@ public class ResilientProducer {
                         .setHeader("sent-at", Instant.now().toString())
                         .build();
 
-                if (streamBridge.send(topic, cluster, message)) {
+                if (streamBridge.send(bindingName, cluster, message)) {
                     return SendOutcome.SUCCESS;
                 }
                 log.warn("StreamBridge returned false for cluster '{}'", cluster);

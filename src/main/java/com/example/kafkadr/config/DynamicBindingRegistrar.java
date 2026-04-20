@@ -169,8 +169,9 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
     private void generateProducerBindings(KafkaClusterProperties props, Map<String, Object> generated) {
         for (KafkaClusterProperties.ProducerConfig producer : props.getProducers()) {
             String topic = producer.getTopic();
+            String bindingName = KafkaClusterProperties.producerBindingName(topic);
 
-            for (String outBinding : List.of(topic, topic + "-out-0")) {
+            for (String outBinding : List.of(bindingName, bindingName + "-out-0")) {
                 String prefix = "spring.cloud.stream.bindings." + outBinding;
                 generated.put(prefix + ".destination", topic);
 

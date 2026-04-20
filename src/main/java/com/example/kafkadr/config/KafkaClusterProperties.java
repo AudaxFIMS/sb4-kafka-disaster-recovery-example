@@ -218,6 +218,15 @@ public class KafkaClusterProperties {
         return functionName(topic, cluster) + "-in-0";
     }
 
+    /**
+     * Returns a safe output binding name for a producer topic.
+     * Topics with dots (e.g. "ax123.test.event") can't be used directly as Spring property keys,
+     * so we convert to camelCase (e.g. "ax123TestEvent") for the binding name.
+     */
+    public static String producerBindingName(String topic) {
+        return toCamelCase(topic);
+    }
+
     private static String toCamelCase(String name) {
         String[] parts = name.split("[\\-.]");
         StringBuilder sb = new StringBuilder(parts[0]);
