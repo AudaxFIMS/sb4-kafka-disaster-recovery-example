@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -32,6 +33,29 @@ public class ResilientProducer {
     }
 
     /**
+     * Sends a pre-built message with automatic failover across clusters.
+     * The message must contain a "message-id" header for idempotency (generated if absent).
+     * System headers "source-cluster" and "sent-at" are added/overwritten on each attempt.
+     *
+     * @param topic   destination topic
+     * @param message pre-built message with payload and headers
+     */
+    public SendResult send(String topic, Message<?> message) {
+        String id = message.getHeaders().containsKey("message-id")
+                ? message.getHeaders().get("message-id", String.class)
+                : UUID.randomUUID().toString();
+
+        // Ensure message-id is present
+        if (!message.getHeaders().containsKey("message-id")) {
+            message = MessageBuilder.fromMessage(message)
+                    .setHeader("message-id", id)
+                    .build();
+        }
+
+        return doSend(topic, message, id);
+    }
+
+    /**
      * Sends a message with automatic failover across clusters.
      *
      * @param topic     destination topic
@@ -39,7 +63,31 @@ public class ResilientProducer {
      * @param messageId optional idempotency key (generated if null)
      */
     public SendResult send(String topic, Object payload, String messageId) {
+        return send(topic, payload, messageId, null);
+    }
+
+    /**
+     * Sends a message with custom headers and automatic failover across clusters.
+     *
+     * @param topic     destination topic
+     * @param payload   any payload type — String, POJO, byte[], Map, etc.
+     * @param messageId optional idempotency key (generated if null)
+     * @param headers   optional custom headers to include in the message
+     */
+    public SendResult send(String topic, Object payload, String messageId, Map<String, Object> headers) {
         String id = (messageId != null) ? messageId : UUID.randomUUID().toString();
+
+        var builder = MessageBuilder.withPayload(payload)
+                .setHeader("message-id", id);
+
+        if (headers != null) {
+            headers.forEach(builder::setHeader);
+        }
+
+        return doSend(topic, builder.build(), id);
+    }
+
+    private SendResult doSend(String topic, Message<?> message, String messageId) {
         Set<String> triedClusters = new HashSet<>();
 
         while (triedClusters.size() < clusterManager.getClustersByPriority().size()) {
@@ -50,10 +98,10 @@ public class ResilientProducer {
             }
 
             try {
-                SendOutcome outcome = trySendWithRetries(topic, cluster, payload, id);
+                SendOutcome outcome = trySendWithRetries(topic, cluster, message, messageId);
                 switch (outcome) {
                     case SUCCESS:
-                        return new SendResult(true, cluster, id);
+                        return new SendResult(true, cluster, messageId);
                     case CLUSTER_UNAVAILABLE:
                         triedClusters.add(cluster);
                         log.warn("Cluster '{}' unavailable, forcing failover", cluster);
@@ -67,21 +115,21 @@ public class ResilientProducer {
                 }
             } catch (SerializationException e) {
                 log.warn("Serialization error, skipping publish: topic={}, messageId={}, error={}",
-                        topic, id, e.getMessage());
-                return new SendResult(false, cluster, id);
+                        topic, messageId, e.getMessage());
+                return new SendResult(false, cluster, messageId);
             }
         }
 
         log.error("All {} clusters unavailable. topic={}, messageId={}",
-                triedClusters.size(), topic, id);
-        return new SendResult(false, null, id);
+                triedClusters.size(), topic, messageId);
+        return new SendResult(false, null, messageId);
     }
 
-    private SendOutcome trySendWithRetries(String topic, String cluster, Object payload, String messageId) {
+    private SendOutcome trySendWithRetries(String topic, String cluster, Message<?> originalMessage,
+                                           String messageId) {
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                Message<?> message = MessageBuilder.withPayload(payload)
-                        .setHeader("message-id", messageId)
+                Message<?> message = MessageBuilder.fromMessage(originalMessage)
                         .setHeader("source-cluster", cluster)
                         .setHeader("sent-at", Instant.now().toString())
                         .build();

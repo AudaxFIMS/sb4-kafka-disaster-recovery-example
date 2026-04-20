@@ -12,7 +12,6 @@ import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -20,7 +19,6 @@ import java.util.concurrent.TimeUnit;
 public class ClusterHealthChecker implements HealthIndicator {
 
     private static final Logger log = LoggerFactory.getLogger(ClusterHealthChecker.class);
-    private static final String KAFKA_BINDER_CONFIG_PREFIX = "spring.cloud.stream.kafka.binder.configuration.";
 
     private final KafkaClusterProperties properties;
     private final ActiveClusterManager clusterManager;
@@ -38,32 +36,14 @@ public class ClusterHealthChecker implements HealthIndicator {
         for (Map.Entry<String, ClusterConfig> entry : properties.getClusters().entrySet()) {
             String name = entry.getKey();
             String brokers = entry.getValue().getBootstrapServers();
-            Map<String, String> kafkaClientProps = extractKafkaClientProperties(name);
+            Map<String, String> kafkaClientProps = KafkaAdminHelper.extractKafkaClientProperties(
+                    properties.getEffectiveEnvironment(name));
             boolean healthy = probe(brokers, timeout, kafkaClientProps);
             clusterManager.reportHealth(name, healthy);
         }
     }
 
-    /**
-     * Extracts raw Kafka client properties from the merged environment.
-     * Properties under spring.cloud.stream.kafka.binder.configuration.* are Kafka client properties
-     * (security.protocol, ssl.*, sasl.*, etc.)
-     */
-    private Map<String, String> extractKafkaClientProperties(String clusterName) {
-        Map<String, String> env = properties.getEffectiveEnvironment(clusterName);
-        Map<String, String> kafkaProps = new HashMap<>();
-
-        for (Map.Entry<String, String> entry : env.entrySet()) {
-            if (entry.getKey().startsWith(KAFKA_BINDER_CONFIG_PREFIX)) {
-                String kafkaKey = entry.getKey().substring(KAFKA_BINDER_CONFIG_PREFIX.length());
-                kafkaProps.put(kafkaKey, entry.getValue());
-            }
-        }
-
-        return kafkaProps;
-    }
-
-    private boolean probe(String brokers, long timeoutMs, Map<String, String> kafkaClientProps) {
+private boolean probe(String brokers, long timeoutMs, Map<String, String> kafkaClientProps) {
         try (AdminClient admin = KafkaAdminHelper.createAdminClient(brokers, (int) timeoutMs, kafkaClientProps)) {
             admin.describeCluster()
                     .clusterId()

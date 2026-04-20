@@ -213,8 +213,8 @@ public class KafkaClusterProperties {
         return functionName(topic, cluster) + "-in-0";
     }
 
-    private static String toCamelCase(String dashed) {
-        String[] parts = dashed.split("-");
+    private static String toCamelCase(String name) {
+        String[] parts = name.split("[\\-.]");
         StringBuilder sb = new StringBuilder(parts[0]);
         for (int i = 1; i < parts.length; i++) {
             sb.append(capitalize(parts[i]));

@@ -21,8 +21,10 @@ public final class KafkaAdminHelper {
 
     private KafkaAdminHelper() {}
 
-    public static boolean probeCluster(String brokers, int timeoutMs) {
-        try (AdminClient admin = createAdminClient(brokers, timeoutMs)) {
+    private static final String KAFKA_BINDER_CONFIG_PREFIX = "spring.cloud.stream.kafka.binder.configuration.";
+
+    public static boolean probeCluster(String brokers, int timeoutMs, Map<String, String> kafkaClientProps) {
+        try (AdminClient admin = createAdminClient(brokers, timeoutMs, kafkaClientProps)) {
             admin.describeCluster().clusterId().get(timeoutMs, TimeUnit.MILLISECONDS);
             return true;
         } catch (Exception e) {
@@ -30,8 +32,21 @@ public final class KafkaAdminHelper {
         }
     }
 
+    public static boolean probeCluster(String brokers, int timeoutMs) {
+        return probeCluster(brokers, timeoutMs, Map.of());
+    }
+
     public static boolean probeCluster(String brokers) {
-        return probeCluster(brokers, DEFAULT_TIMEOUT_MS);
+        return probeCluster(brokers, DEFAULT_TIMEOUT_MS, Map.of());
+    }
+
+    /**
+     * Probes a cluster using Kafka client properties extracted from the cluster's effective environment.
+     */
+    public static boolean probeCluster(String clusterName, KafkaClusterProperties props) {
+        String brokers = props.getClusters().get(clusterName).getBootstrapServers();
+        Map<String, String> kafkaProps = extractKafkaClientProperties(props.getEffectiveEnvironment(clusterName));
+        return probeCluster(brokers, DEFAULT_TIMEOUT_MS, kafkaProps);
     }
 
     public static void provisionTopics(String cluster, String brokers, KafkaClusterProperties props, int timeoutMs) {
@@ -42,7 +57,9 @@ public final class KafkaAdminHelper {
 
         if (requiredTopics.isEmpty()) return;
 
-        try (AdminClient admin = createAdminClient(brokers, timeoutMs)) {
+        Map<String, String> kafkaProps = extractKafkaClientProperties(props.getEffectiveEnvironment(cluster));
+
+        try (AdminClient admin = createAdminClient(brokers, timeoutMs, kafkaProps)) {
             Set<String> existing = admin.listTopics().names().get(timeoutMs, TimeUnit.MILLISECONDS);
             List<NewTopic> toCreate = requiredTopics.stream()
                     .filter(t -> !existing.contains(t))
@@ -61,6 +78,21 @@ public final class KafkaAdminHelper {
 
     public static void provisionTopics(String cluster, String brokers, KafkaClusterProperties props) {
         provisionTopics(cluster, brokers, props, DEFAULT_TIMEOUT_MS);
+    }
+
+    /**
+     * Extracts raw Kafka client properties from the effective environment.
+     * Properties under spring.cloud.stream.kafka.binder.configuration.* are Kafka client properties.
+     */
+    public static Map<String, String> extractKafkaClientProperties(Map<String, String> effectiveEnvironment) {
+        Map<String, String> kafkaProps = new HashMap<>();
+        for (Map.Entry<String, String> entry : effectiveEnvironment.entrySet()) {
+            if (entry.getKey().startsWith(KAFKA_BINDER_CONFIG_PREFIX)) {
+                String kafkaKey = entry.getKey().substring(KAFKA_BINDER_CONFIG_PREFIX.length());
+                kafkaProps.put(kafkaKey, entry.getValue());
+            }
+        }
+        return kafkaProps;
     }
 
     public static AdminClient createAdminClient(String brokers, int timeoutMs) {

@@ -83,14 +83,11 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
 
     private Set<String> probeAllClusters(KafkaClusterProperties props) {
         Set<String> reachable = new LinkedHashSet<>();
-        for (Map.Entry<String, KafkaClusterProperties.ClusterConfig> entry : props.getClusters().entrySet()) {
-            String name = entry.getKey();
-            String brokers = entry.getValue().getBootstrapServers();
-            if (KafkaAdminHelper.probeCluster(brokers)) {
+        for (String name : props.getClusters().keySet()) {
+            if (KafkaAdminHelper.probeCluster(name, props)) {
                 reachable.add(name);
             } else {
-                log.warn("Cluster '{}' ({}) unreachable at startup — will be initialized when it comes online",
-                        name, brokers);
+                log.warn("Cluster '{}' unreachable at startup — will be initialized when it comes online", name);
             }
         }
         return reachable;

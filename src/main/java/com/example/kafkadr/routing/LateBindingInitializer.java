@@ -80,11 +80,11 @@ public class LateBindingInitializer {
                 continue;
             }
 
-            String brokers = properties.getClusters().get(cluster).getBootstrapServers();
-            if (!KafkaAdminHelper.probeCluster(brokers)) {
+            if (!KafkaAdminHelper.probeCluster(cluster, properties)) {
                 continue;
             }
 
+            String brokers = properties.getClusters().get(cluster).getBootstrapServers();
             try {
                 if (properties.isAutoCreateTopics()) {
                     KafkaAdminHelper.provisionTopics(cluster, brokers, properties);

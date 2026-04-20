@@ -45,6 +45,9 @@ A production-ready example of **active-passive disaster recovery** across N Kafk
 - **Fully dynamic configuration** -- clusters, consumers, and producers are defined in YAML; no code changes needed to add topics or clusters
 - **Per-topic handler mapping** -- business logic methods are mapped to topics via configuration
 - **Unified property model** -- consumers and producers use the same `default-*-properties` + per-topic `properties` merge pattern with `configuration:` for Kafka client properties
+- **Conditional activation** -- all DR components are gated by `kafka-dr.enabled`; without it, the app is a standard Spring Boot application
+- **SSL/SASL support** -- security properties from `default-environment.configuration` are applied to all AdminClient operations (probes, health checks, topic provisioning)
+- **Custom headers** -- `ResilientProducer.send()` accepts optional user headers merged with system headers (`message-id`, `source-cluster`, `sent-at`)
 
 ## Project Structure
 
@@ -53,7 +56,7 @@ src/main/
   avro/
     PaymentEvent.avsc                  # Avro schema (generates Java class)
   java/com/example/kafkadr/
-    KafkaDrExampleApplication.java     # Entry point (excludes KafkaAutoConfiguration)
+    KafkaDrExampleApplication.java     # Entry point
     config/
       KafkaClusterProperties.java      # Configuration model (clusters, consumers, producers)
       KafkaAdminHelper.java            # Shared AdminClient utilities (probe, topic provisioning)
@@ -167,7 +170,12 @@ curl -s localhost:8080/api/messages/status | jq
 
 ## Configuration
 
-Everything is configured under the `kafka-dr` prefix. Binders, bindings, and function definitions are generated automatically at startup.
+Everything is configured under the `kafka-dr` prefix. Binders, bindings, and function definitions are generated automatically at startup. All DR components are conditional on `kafka-dr.enabled: true` — without it, the application starts as a standard Spring Boot app.
+
+```yaml
+kafka-dr:
+  enabled: true                        # Activates all DR components
+```
 
 ### Clusters
 
@@ -363,10 +371,27 @@ public class OrderService {
     private final ResilientProducer producer;
 
     public void placeOrder(OrderEvent order) {
+        // Simple: payload + messageId
         producer.send("order-events", order, order.getOrderId());
+
+        // With custom headers
+        producer.send("order-events", order, order.getOrderId(), Map.of(
+            "correlation-id", correlationId,
+            "source-service", "order-service"
+        ));
+
+        // Full control: pre-built Message<?>
+        Message<OrderEvent> msg = MessageBuilder.withPayload(order)
+                .setHeader("message-id", order.getOrderId())
+                .setHeader("correlation-id", correlationId)
+                .setHeader("priority", "high")
+                .build();
+        producer.send("order-events", msg);
     }
 }
 ```
+
+System headers `source-cluster` and `sent-at` are added automatically on each send attempt.
 
 No bean registration, no binding configuration, no binder setup needed.
 
@@ -439,7 +464,8 @@ Synchronous send (`sync: true`) ensures the broker ACK is received before return
 
 | Decision | Rationale |
 |---|---|
-| `KafkaAutoConfiguration` excluded | Prevents Spring Boot from creating a default `KafkaAdmin` pointing to `localhost:9092`, which blocks startup when no broker is running locally |
+| `kafka-dr.enabled` conditional activation | All DR components use `@ConditionalOnProperty`; without the flag, the app starts as standard Spring Boot with full `KafkaAutoConfiguration` |
+| Default `KafkaAdmin` removed when DR active | `DynamicBindingRegistrar` removes the `kafkaAdmin` bean to prevent Spring Boot's default from connecting to `localhost:9092` and blocking startup |
 | `auto-create-topics: false` | Binder's `AdminClient` blocks during binding initialization if broker is unreachable; topic creation is handled asynchronously by `DynamicBindingRegistrar` (at startup) and `LateBindingInitializer` (for recovered clusters) when enabled |
 | All consumers `auto-startup: false` | Prevents Kafka consumer metadata fetch from blocking the main thread during startup; `BindingLifecycleManager` starts consumers after health check elects an active cluster |
 | All clusters start as `UNHEALTHY` | First health check immediately elects the first reachable cluster (no `recoveryThreshold` wait); subsequent recovery requires full threshold |
@@ -448,7 +474,7 @@ Synchronous send (`sync: true`) ensures the broker ACK is received before return
 | Noisy Kafka client logs suppressed | `AdminMetadataManager`, `Metadata`, `NetworkClient` set to ERROR; `LoggingProducerListener` disabled to prevent payload leaking in logs |
 | Payload excluded from API responses and logs | Prevents sensitive data leakage; only messageId and metadata are returned/logged |
 | Schema Registry configured with all brokers | `KAFKASTORE_BOOTSTRAP_SERVERS` includes all clusters so SR can register schemas even when primary is down |
-| `KafkaAdminHelper` shared utility | Consolidates AdminClient probe, topic provisioning, and client creation logic — eliminates duplication across `DynamicBindingRegistrar`, `LateBindingInitializer`, and `ClusterHealthChecker` |
+| `KafkaAdminHelper` shared utility | Consolidates AdminClient probe, topic provisioning, client creation, and Kafka client property extraction — eliminates duplication and ensures SSL/SASL properties are applied to all AdminClient operations |
 
 ## Tech Stack
 
