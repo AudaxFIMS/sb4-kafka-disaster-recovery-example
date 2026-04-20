@@ -5,8 +5,10 @@ import com.example.kafkadr.model.OrderEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.messaging.Message;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 public class MessageProcessor {
 

@@ -4,6 +4,7 @@ import com.example.kafkadr.config.KafkaClusterProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Comparator;
@@ -12,6 +13,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 public class ActiveClusterManager {
 

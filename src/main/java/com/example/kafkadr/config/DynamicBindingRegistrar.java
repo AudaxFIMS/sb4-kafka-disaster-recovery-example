@@ -33,13 +33,24 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
 
     @Override
     public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) {
+        Boolean enabled = environment.getProperty("kafka-dr.enabled", Boolean.class, false);
+        if (!enabled) {
+            return;
+        }
+
         KafkaClusterProperties props = Binder.get(environment)
                 .bind("kafka-dr", KafkaClusterProperties.class)
                 .orElse(null);
 
         if (props == null || props.getClusters().isEmpty()) {
-            log.warn("No kafka-dr clusters configured, skipping");
+            log.warn("kafka-dr.enabled=true but no clusters configured, skipping");
             return;
+        }
+
+        // Remove Spring Boot's default KafkaAdmin to prevent it from connecting
+        // to localhost:9092 and blocking startup. DR manages its own AdminClients.
+        if (registry.containsBeanDefinition("kafkaAdmin")) {
+            registry.removeBeanDefinition("kafkaAdmin");
         }
 
         Set<String> reachableClusters = probeAllClusters(props);

@@ -1,5 +1,6 @@
 package com.example.kafkadr.config;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
@@ -7,6 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 @ConfigurationProperties(prefix = "kafka-dr")
 public class KafkaClusterProperties {

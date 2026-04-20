@@ -2,6 +2,7 @@ package com.example.kafkadr.config;
 
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
@@ -13,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Populated at startup from environment property set by DynamicBindingRegistrar,
  * and updated at runtime by LateBindingInitializer.
  */
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 public class StartupClusterState {
 

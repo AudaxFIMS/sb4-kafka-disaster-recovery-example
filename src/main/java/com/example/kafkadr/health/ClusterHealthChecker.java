@@ -10,11 +10,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 public class ClusterHealthChecker implements HealthIndicator {
 

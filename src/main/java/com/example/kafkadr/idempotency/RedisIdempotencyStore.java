@@ -5,10 +5,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 @Profile("redis-idempotency")
 public class RedisIdempotencyStore implements IdempotencyStore {

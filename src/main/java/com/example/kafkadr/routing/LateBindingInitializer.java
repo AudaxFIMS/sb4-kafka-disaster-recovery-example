@@ -17,6 +17,7 @@ import org.springframework.integration.channel.DirectChannel;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
@@ -31,6 +32,7 @@ import java.util.function.Consumer;
  * 3. Wires function beans to the channels
  * 4. Marks the cluster as initialized in StartupClusterState
  */
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 public class LateBindingInitializer {
 

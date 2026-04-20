@@ -5,12 +5,14 @@ import com.example.kafkadr.avro.PaymentStatus;
 import com.example.kafkadr.producer.ResilientProducer;
 import com.example.kafkadr.routing.ActiveClusterManager;
 import org.springframework.http.ResponseEntity;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @RestController
 @RequestMapping("/api/messages")
 public class MessageProducerController {

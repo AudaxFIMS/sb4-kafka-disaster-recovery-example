@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -13,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * In-memory fallback. Activate with spring.profiles.active=in-memory-idempotency.
  * Not suitable for multi-instance deployments.
  */
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 @Profile("in-memory-idempotency")
 public class InMemoryIdempotencyStore implements IdempotencyStore {

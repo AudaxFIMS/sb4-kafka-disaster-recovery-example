@@ -8,6 +8,7 @@ import org.springframework.cloud.stream.binding.BindingsLifecycleController;
 import org.springframework.cloud.stream.binding.BindingsLifecycleController.State;
 import org.springframework.cloud.stream.function.StreamBridge;
 import org.springframework.context.event.EventListener;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Field;
@@ -17,6 +18,7 @@ import java.util.*;
  * Manages both consumer (input) and producer (output) bindings on cluster switch.
  * Supports both startup-initialized and late-initialized clusters.
  */
+@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 public class BindingLifecycleManager {
 
