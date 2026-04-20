@@ -5,6 +5,7 @@ spring:
       port: ${REDIS_PORT:6379}
 
 kafka-dr:
+  enabled: true
   default-environment:
     spring.cloud.stream.kafka.binder:
       auto-create-topics: false
@@ -27,6 +28,7 @@ kafka-dr:
       max.block.ms: 5000
       delivery.timeout.ms: 10000
       request.timeout.ms: 5000
+      key.serializer: org.apache.kafka.common.serialization.StringSerializer
 
   clusters:
     primary:

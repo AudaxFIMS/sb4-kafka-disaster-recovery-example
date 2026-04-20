@@ -79,8 +79,9 @@ src/main/
       ClusterHealthChecker.java        # Periodic health probe for all clusters
     idempotency/
       IdempotencyStore.java            # Interface
-      RedisIdempotencyStore.java       # Redis SET NX EX (default)
-      InMemoryIdempotencyStore.java    # In-memory fallback (profile: in-memory-idempotency)
+      RedisIdempotencyStore.java       # Redis SET NX EX implementation
+      InMemoryIdempotencyStore.java    # In-memory fallback (default)
+      OnDrEnabledWithIdempotencyType.java  # Composite condition (DR enabled + type match)
     model/
       OrderEvent.java                  # Sample JSON POJO
   resources/
@@ -170,12 +171,26 @@ curl -s localhost:8080/api/messages/status | jq
 
 ## Configuration
 
-Everything is configured under the `kafka-dr` prefix. Binders, bindings, and function definitions are generated automatically at startup. All DR components are conditional on `kafka-dr.enabled: true` — without it, the application starts as a standard Spring Boot app.
+Everything is configured under the `kafka-dr` prefix. Binders, bindings, and function definitions are generated automatically at startup.
+
+### Enabling DR
+
+All DR components are gated by `kafka-dr.enabled`. **Default is `false`** — if the property is absent or set to `false`, no DR beans are created and the application starts as a standard Spring Boot app with full `KafkaAutoConfiguration`.
 
 ```yaml
 kafka-dr:
-  enabled: true                        # Activates all DR components
+  enabled: true                        # Activates all DR components (default: false)
 ```
+
+> **Important:** When `kafka-dr.enabled: true`, the framework:
+> - Removes Spring Boot's default `kafkaAdmin` bean (prevents blocking on startup)
+> - Creates its own binders, bindings, health checks, and failover logic
+> - Manages all Kafka producer/consumer lifecycle
+>
+> When `kafka-dr.enabled` is absent or `false`:
+> - No DR components are created
+> - Spring Boot's standard `KafkaAutoConfiguration` is fully active
+> - The application behaves as a regular Spring Boot + Kafka app
 
 ### Clusters
 
@@ -272,11 +287,14 @@ kafka-dr:
       max.block.ms: 5000              # Max time to block on metadata fetch
       delivery.timeout.ms: 10000      # Max time for end-to-end delivery
       request.timeout.ms: 5000        # Max time for broker response
+      key.serializer: org.apache.kafka.common.serialization.StringSerializer
 ```
+
+> **Note:** `key.serializer` is set to `StringSerializer` because the default `ByteArraySerializer` fails when Spring Cloud Stream passes message keys as Strings. `StringSerializer` handles both `null` and `String` keys.
 
 ### Producers
 
-Independent from consumers. Each producer generates output binding properties for StreamBridge. Per-producer `properties` are merged on top of `default-producer-properties`.
+Independent from consumers. Each producer generates output binding properties for StreamBridge. Per-producer `properties` are merged on top of `default-producer-properties`. Topic names with dots (e.g. `ax123.test.event`) are fully supported — binding names are auto-converted to camelCase (`ax123TestEvent`) internally to avoid Spring property path conflicts.
 
 ```yaml
 kafka-dr:
@@ -323,15 +341,17 @@ kafka-dr:
 ```yaml
 kafka-dr:
   idempotency:
+    type: in-memory          # in-memory (default) | redis
     ttl-seconds: 3600        # How long to remember processed message IDs
     key-prefix: idempotency  # Redis key prefix
 ```
 
-To use in-memory idempotency (dev only, no Redis needed):
+| Type | Use case | Requirements |
+|---|---|---|
+| `in-memory` | Development, single-instance deployments | None (default) |
+| `redis` | Production, multi-instance deployments | Redis + `StringRedisTemplate` bean |
 
-```bash
-mvn spring-boot:run -Dspring-boot.run.profiles=in-memory-idempotency
-```
+Both implementations require `kafka-dr.enabled: true` (composite condition via `OnDrEnabledWithIdempotencyType`).
 
 ## Adding Business Logic
 
@@ -475,6 +495,9 @@ Synchronous send (`sync: true`) ensures the broker ACK is received before return
 | Payload excluded from API responses and logs | Prevents sensitive data leakage; only messageId and metadata are returned/logged |
 | Schema Registry configured with all brokers | `KAFKASTORE_BOOTSTRAP_SERVERS` includes all clusters so SR can register schemas even when primary is down |
 | `KafkaAdminHelper` shared utility | Consolidates AdminClient probe, topic provisioning, client creation, and Kafka client property extraction — eliminates duplication and ensures SSL/SASL properties are applied to all AdminClient operations |
+| Topic names converted to camelCase for binding names | Dots in topic names (e.g. `ax123.test.event`) break Spring property binding; `producerBindingName()` converts to safe camelCase (`ax123TestEvent`) while keeping the actual Kafka topic in `destination` |
+| `key.serializer: StringSerializer` | Default `ByteArraySerializer` fails when keys are passed as Strings by Spring Cloud Stream; `StringSerializer` handles both null and String keys |
+| Idempotency type via `kafka-dr.idempotency.type` | Replaces Spring profiles for selecting idempotency implementation; uses composite `AllNestedConditions` to require both `kafka-dr.enabled=true` AND type match |
 
 ## Tech Stack
 
