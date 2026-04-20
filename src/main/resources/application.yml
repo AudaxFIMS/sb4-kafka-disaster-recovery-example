@@ -88,6 +88,7 @@ kafka-dr:
   late-initializer:
     timeout-ms: 3000
   idempotency:
+    type: in-memory                  # in-memory | redis
     ttl-seconds: 3600
     key-prefix: idempotency
 

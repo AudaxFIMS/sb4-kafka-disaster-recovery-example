@@ -146,9 +146,12 @@ public class KafkaClusterProperties {
     }
 
     public static class IdempotencyConfig {
+        private String type = "in-memory";
         private long ttlSeconds = 3600;
         private String keyPrefix = "idempotency";
 
+        public String getType() { return type; }
+        public void setType(String type) { this.type = type; }
         public long getTtlSeconds() { return ttlSeconds; }
         public void setTtlSeconds(long ttlSeconds) { this.ttlSeconds = ttlSeconds; }
         public String getKeyPrefix() { return keyPrefix; }
