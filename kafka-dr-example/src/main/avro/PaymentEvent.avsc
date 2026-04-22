@@ -1,0 +1,13 @@
+{
+  "type": "record",
+  "name": "PaymentEvent",
+  "namespace": "dev.semeshin.kafkadr.avro",
+  "fields": [
+    {"name": "paymentId", "type": "string"},
+    {"name": "orderId",   "type": "string"},
+    {"name": "amount",    "type": "double"},
+    {"name": "currency",  "type": "string", "default": "USD"},
+    {"name": "status",    "type": {"type": "enum", "name": "PaymentStatus", "symbols": ["PENDING", "COMPLETED", "FAILED"]}},
+    {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"}
+  ]
+}
