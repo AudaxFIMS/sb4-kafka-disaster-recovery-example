@@ -120,11 +120,16 @@ docker-compose.yml                         # 3 Kafka clusters + Schema Registry 
 # 1. Start infrastructure
 docker-compose up -d
 
-# 2. Build and run
+# 2. Build and install the starter
+cd kafka-dr-spring-boot-starter
 mvn clean install -DskipTests
-cd kafka-dr-example
-mvn spring-boot:run
+
+# 3. Run the example app
+cd ../kafka-dr-example
+mvn clean spring-boot:run
 ```
+
+> **Note:** The two modules have independent POMs (no parent aggregator). Build the starter first — it installs the JAR into your local Maven repository. Then the example app resolves it as a regular dependency.
 
 ### Using in Your Own Application
 
@@ -439,7 +444,7 @@ When a cluster recovers after startup:
 
 | Decision | Rationale |
 |---|---|
-| Multi-module (starter + example) | Reusable framework JAR; applications only implement `MessageProcessor` and `IdempotencyStore` |
+| Independent POMs (no parent aggregator) | Starter and example app are fully independent Maven projects; starter installs to local repo, apps depend on it like any other library |
 | `kafka-dr.enabled` conditional activation | All DR components use `@ConditionalOnProperty`; without it, standard Spring Boot |
 | `KafkaDrAutoConfiguration` with `@ComponentScan` | Starter works regardless of consuming app's base package |
 | Default `KafkaAdmin` removed when DR active | Prevents blocking on `localhost:9092` at startup |
