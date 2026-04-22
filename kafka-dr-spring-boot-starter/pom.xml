@@ -5,15 +5,34 @@
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
-        <groupId>dev.semeshin</groupId>
-        <artifactId>kafka-dr-parent</artifactId>
-        <version>0.0.1-SNAPSHOT</version>
-        <relativePath>../pom.xml</relativePath>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.0.5</version>
+        <relativePath/>
     </parent>
 
+    <groupId>dev.semeshin</groupId>
     <artifactId>kafka-dr-spring-boot-starter</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
     <name>kafka-dr-spring-boot-starter</name>
     <description>Kafka Multi-Cluster DR Framework — Spring Boot Starter</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <spring-cloud.version>2025.1.1</spring-cloud.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-dependencies</artifactId>
+                <version>${spring-cloud.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
         <dependency>
