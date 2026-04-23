@@ -53,6 +53,7 @@ The project is structured as a multi-module Maven build:
 - **Conditional activation** — all DR components are gated by `kafka-dr.enabled`; without it, the app is a standard Spring Boot application
 - **SSL/SASL support** — security properties from `default-environment.configuration` are applied to all AdminClient operations
 - **Custom headers** — `ResilientProducer.send()` accepts optional user headers or pre-built `Message<?>`
+- **Standard Kafka key for idempotency** — uses `KafkaHeaders.KEY` / `KafkaHeaders.RECEIVED_KEY` instead of custom headers; Kafka key is always available and doubles as the idempotency key
 - **Framework / application separation** — reusable starter JAR + application-specific handlers via `MessageProcessor` interface
 
 ## Project Structure
@@ -359,6 +360,8 @@ kafka-dr:
     key-prefix: idempotency  # Key prefix for store implementations
 ```
 
+Idempotency uses **Kafka record key** (`KafkaHeaders.RECEIVED_KEY`) as the deduplication key — no custom headers required. Messages without a key are processed without idempotency check (with a warning log).
+
 The framework provides `InMemoryIdempotencyStore` as default (`@ConditionalOnMissingBean`). To replace it, register any `@Component implements IdempotencyStore` in your application — the in-memory fallback is disabled automatically.
 
 The example app includes `RedisIdempotencyStore` as a custom implementation.
@@ -397,9 +400,9 @@ public class OrderService {
             "correlation-id", correlationId
         ));
 
-        // Pre-built Message<?>
+        // Pre-built Message<?> with Kafka key
         Message<OrderEvent> msg = MessageBuilder.withPayload(order)
-                .setHeader("message-id", order.getOrderId())
+                .setHeader(KafkaHeaders.KEY, order.getOrderId())
                 .setHeader("correlation-id", correlationId)
                 .build();
         producer.send("order-events", msg);
@@ -407,7 +410,11 @@ public class OrderService {
 }
 ```
 
-System headers `source-cluster` and `sent-at` are added automatically.
+The `messageId` parameter (or `KafkaHeaders.KEY` header) is used as:
+- **Kafka record key** — determines partition assignment
+- **Idempotency key** — `IdempotentConsumer` deduplicates by `KafkaHeaders.RECEIVED_KEY` on the consumer side
+
+System headers `source-cluster` and `sent-at` are added automatically on each send attempt.
 
 ## How Failover Works
 
@@ -451,6 +458,7 @@ When a cluster recovers after startup:
 | `InMemoryIdempotencyStore` via `@ConditionalOnMissingBean` | Auto-replaced by any custom `IdempotencyStore` bean in the application |
 | `MessageProcessor` as marker interface | Handler methods discovered across all implementing beans; no framework code changes needed |
 | Binder configs for all clusters, bindings only for reachable | Binder child context creation blocks; environment properties alone are safe |
+| Kafka key as idempotency key | Uses standard `KafkaHeaders.KEY` / `RECEIVED_KEY` instead of custom headers; always available, also drives partition assignment |
 | Topic names converted to camelCase for binding names | Dots in topic names break Spring property binding |
 
 ## Tech Stack

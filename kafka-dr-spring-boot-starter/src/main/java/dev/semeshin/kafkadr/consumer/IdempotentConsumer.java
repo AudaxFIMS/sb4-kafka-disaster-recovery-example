@@ -3,6 +3,7 @@ package dev.semeshin.kafkadr.consumer;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 
 import java.util.function.Consumer;
@@ -32,21 +33,30 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
 
     @Override
     public void accept(Message<?> msg) {
-        String messageId = msg.getHeaders().get("message-id", String.class);
+        String key = extractKey(msg);
 
-        if (messageId == null) {
-            log.warn("[{}@{}] Message without message-id, processing anyway",
+        if (key == null) {
+            log.warn("[{}@{}] Message without key, processing without idempotency check",
                     consumerName, clusterName);
             delegate.accept(msg);
             return;
         }
 
-        if (!idempotencyStore.tryProcess(consumerName, messageId)) {
-            log.info("[{}@{}] Duplicate skipped: messageId={}", consumerName, clusterName, messageId);
+        if (!idempotencyStore.tryProcess(consumerName, key)) {
+            log.info("[{}@{}] Duplicate skipped: key={}", consumerName, clusterName, key);
             return;
         }
 
-        log.info("[{}@{}] Processing: messageId={}", consumerName, clusterName, messageId);
+        log.info("[{}@{}] Processing: key={}", consumerName, clusterName, key);
         delegate.accept(msg);
+    }
+
+    private String extractKey(Message<?> msg) {
+        // Try kafka_receivedMessageKey (consumer side) first, then kafka_messageKey (producer side)
+        Object key = msg.getHeaders().get(KafkaHeaders.RECEIVED_KEY);
+        if (key == null) {
+            key = msg.getHeaders().get(KafkaHeaders.KEY);
+        }
+        return key != null ? key.toString() : null;
     }
 }

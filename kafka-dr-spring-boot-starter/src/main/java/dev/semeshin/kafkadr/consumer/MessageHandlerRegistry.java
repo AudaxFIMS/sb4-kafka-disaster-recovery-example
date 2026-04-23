@@ -5,6 +5,7 @@ import dev.semeshin.kafkadr.config.KafkaClusterProperties.ConsumerConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -29,7 +30,7 @@ public class MessageHandlerRegistry {
     private final ObjectMapper objectMapper;
 
     private final Consumer<Message<?>> defaultHandler =
-            msg -> log.info("[unhandled] Received message, messageId={}", msg.getHeaders().get("message-id"));
+            msg -> log.info("[unhandled] Received message, key={}", msg.getHeaders().get(KafkaHeaders.RECEIVED_KEY));
 
     public MessageHandlerRegistry(List<MessageProcessor> processors,
                                   KafkaClusterProperties properties) {

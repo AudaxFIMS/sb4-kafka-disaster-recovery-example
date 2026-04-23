@@ -40,7 +40,7 @@ public class RedisIdempotencyStore implements IdempotencyStore {
             return true;
         }
 
-        log.debug("Duplicate detected: consumer={}, messageId={}", consumerName, messageId);
+        log.debug("Duplicate detected: consumer={}, key={}", consumerName, messageId);
         return false;
     }
 }

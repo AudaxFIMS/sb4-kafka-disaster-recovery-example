@@ -6,6 +6,7 @@ import org.apache.kafka.common.errors.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.stream.function.StreamBridge;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -36,21 +37,18 @@ public class ResilientProducer {
 
     /**
      * Sends a pre-built message with automatic failover across clusters.
-     * The message must contain a "message-id" header for idempotency (generated if absent).
+     * Uses kafka_messageKey header as idempotency key (generated UUID if absent).
      * System headers "source-cluster" and "sent-at" are added/overwritten on each attempt.
      *
      * @param topic   destination topic
      * @param message pre-built message with payload and headers
      */
     public SendResult send(String topic, Message<?> message) {
-        String id = message.getHeaders().containsKey("message-id")
-                ? message.getHeaders().get("message-id", String.class)
-                : UUID.randomUUID().toString();
+        String id = extractOrGenerateKey(message);
 
-        // Ensure message-id is present
-        if (!message.getHeaders().containsKey("message-id")) {
+        if (!message.getHeaders().containsKey(KafkaHeaders.KEY)) {
             message = MessageBuilder.fromMessage(message)
-                    .setHeader("message-id", id)
+                    .setHeader(KafkaHeaders.KEY, id)
                     .build();
         }
 
@@ -62,7 +60,7 @@ public class ResilientProducer {
      *
      * @param topic     destination topic
      * @param payload   any payload type — String, POJO, byte[], Map, etc.
-     * @param messageId optional idempotency key (generated if null)
+     * @param messageId optional idempotency key, used as Kafka message key (generated if null)
      */
     public SendResult send(String topic, Object payload, String messageId) {
         return send(topic, payload, messageId, null);
@@ -73,20 +71,28 @@ public class ResilientProducer {
      *
      * @param topic     destination topic
      * @param payload   any payload type — String, POJO, byte[], Map, etc.
-     * @param messageId optional idempotency key (generated if null)
+     * @param messageId optional idempotency key, used as Kafka message key (generated if null)
      * @param headers   optional custom headers to include in the message
      */
     public SendResult send(String topic, Object payload, String messageId, Map<String, Object> headers) {
         String id = (messageId != null) ? messageId : UUID.randomUUID().toString();
 
         var builder = MessageBuilder.withPayload(payload)
-                .setHeader("message-id", id);
+                .setHeader(KafkaHeaders.KEY, id);
 
         if (headers != null) {
             headers.forEach(builder::setHeader);
         }
 
         return doSend(topic, builder.build(), id);
+    }
+
+    private String extractOrGenerateKey(Message<?> message) {
+        Object key = message.getHeaders().get(KafkaHeaders.KEY);
+        if (key != null) {
+            return key.toString();
+        }
+        return UUID.randomUUID().toString();
     }
 
     private SendResult doSend(String topic, Message<?> message, String messageId) {
