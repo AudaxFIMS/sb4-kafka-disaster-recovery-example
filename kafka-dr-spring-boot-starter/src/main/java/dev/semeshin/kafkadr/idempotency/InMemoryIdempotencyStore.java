@@ -2,21 +2,16 @@ package dev.semeshin.kafkadr.idempotency;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * In-memory fallback. Created automatically when no other IdempotencyStore bean is registered.
+ * In-memory fallback. Registered as a @Bean in KafkaDrAutoConfiguration
+ * with @ConditionalOnMissingBean so that any custom IdempotencyStore replaces it.
  * Not suitable for multi-instance deployments.
  */
-@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
-@ConditionalOnMissingBean(IdempotencyStore.class)
-@Component
 public class InMemoryIdempotencyStore implements IdempotencyStore {
 
     private static final Logger log = LoggerFactory.getLogger(InMemoryIdempotencyStore.class);

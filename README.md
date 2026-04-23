@@ -61,7 +61,7 @@ The project is structured as a multi-module Maven build:
 ```
 kafka-dr-spring-boot-starter/             # Framework (reusable JAR)
   src/main/java/dev/semeshin/kafkadr/
-    KafkaDrAutoConfiguration.java          # Auto-config: @ComponentScan + @EnableScheduling
+    KafkaDrAutoConfiguration.java          # Auto-config + InMemoryIdempotencyStore @Bean fallback
     config/
       KafkaClusterProperties.java          # Configuration model
       KafkaAdminHelper.java                # Shared AdminClient utilities
@@ -82,7 +82,7 @@ kafka-dr-spring-boot-starter/             # Framework (reusable JAR)
       ClusterHealthChecker.java            # Periodic health probe
     idempotency/
       IdempotencyStore.java                # Interface — implement for custom backends
-      InMemoryIdempotencyStore.java        # Default fallback (@ConditionalOnMissingBean)
+      InMemoryIdempotencyStore.java        # Default fallback (registered as @Bean in auto-config)
   src/main/resources/
     META-INF/spring/
       ...AutoConfiguration.imports         # Spring Boot auto-configuration registration
@@ -362,7 +362,19 @@ kafka-dr:
 
 Idempotency uses **Kafka record key** (`KafkaHeaders.RECEIVED_KEY`) as the deduplication key — no custom headers required. Messages without a key are processed without idempotency check (with a warning log).
 
-The framework provides `InMemoryIdempotencyStore` as default (`@ConditionalOnMissingBean`). To replace it, register any `@Component implements IdempotencyStore` in your application — the in-memory fallback is disabled automatically.
+The framework provides `InMemoryIdempotencyStore` as default fallback — it is registered as a `@Bean` in `KafkaDrAutoConfiguration` with `@ConditionalOnMissingBean(IdempotencyStore.class)`. This ensures proper ordering: Spring processes application `@Component` beans first, then auto-configuration `@Bean` methods. If any `IdempotencyStore` is already registered, the in-memory fallback is skipped.
+
+To replace it, register any `@Component implements IdempotencyStore` in your application:
+
+```java
+@Component
+public class MyIdempotencyStore implements IdempotencyStore {
+    @Override
+    public boolean tryProcess(String consumerName, String messageId) {
+        // your deduplication logic
+    }
+}
+```
 
 The example app includes `RedisIdempotencyStore` as a custom implementation.
 
@@ -455,7 +467,7 @@ When a cluster recovers after startup:
 | `kafka-dr.enabled` conditional activation | All DR components use `@ConditionalOnProperty`; without it, standard Spring Boot |
 | `KafkaDrAutoConfiguration` with `@ComponentScan` | Starter works regardless of consuming app's base package |
 | Default `KafkaAdmin` removed when DR active | Prevents blocking on `localhost:9092` at startup |
-| `InMemoryIdempotencyStore` via `@ConditionalOnMissingBean` | Auto-replaced by any custom `IdempotencyStore` bean in the application |
+| `InMemoryIdempotencyStore` as `@Bean` in auto-configuration | `@ConditionalOnMissingBean` on `@Bean` in `@AutoConfiguration` is reliable (unlike on `@Component`); app-level `@Component` beans are always processed first |
 | `MessageProcessor` as marker interface | Handler methods discovered across all implementing beans; no framework code changes needed |
 | Binder configs for all clusters, bindings only for reachable | Binder child context creation blocks; environment properties alone are safe |
 | Kafka key as idempotency key | Uses standard `KafkaHeaders.KEY` / `RECEIVED_KEY` instead of custom headers; always available, also drives partition assignment |

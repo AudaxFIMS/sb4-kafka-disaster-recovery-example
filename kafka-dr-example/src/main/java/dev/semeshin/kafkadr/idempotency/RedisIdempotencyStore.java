@@ -14,7 +14,6 @@ import java.time.Duration;
  * when registered as a @Component bean. Suitable for multi-instance deployments.
  * Only created when kafka-dr is active.
  */
-@ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
 @Component
 public class RedisIdempotencyStore implements IdempotencyStore {
     private static final Logger log = LoggerFactory.getLogger(RedisIdempotencyStore.class);
