@@ -5,7 +5,8 @@ A production-ready **Spring Boot starter** for **active-passive disaster recover
 The project is structured as a multi-module Maven build:
 
 - **`kafka-dr-spring-boot-starter`** — reusable framework (add as dependency)
-- **`kafka-dr-example`** — example application demonstrating usage
+- **`kafka-dr-example`** — example application with Avro, Redis idempotency, REST API
+- **`kafka-dr-example-timestamp-seek`** — minimal example with timestamp-based seek on failover
 
 > **Important: Cross-cluster replication is required.**
 > This framework handles failover at the *application level* — switching producers and consumers between clusters. It does **not** replicate data between Kafka clusters. To ensure no messages are lost, configure cross-cluster replication independently using [MirrorMaker 2](https://kafka.apache.org/documentation/#georeplication), Confluent Cluster Linking, or Confluent Replicator.
@@ -241,7 +242,7 @@ kafka-dr:
     seek-by-timestamp: true
 ```
 
-The app has no Redis, no Avro, no custom idempotency store — just the starter + a simple `MessageProcessor` + the timestamp seek flag.
+The app has no Avro — just the starter + a simple `MessageProcessor` + timestamp seek. It includes `RedisTimestampStore` to persist timestamps across restarts (requires Redis).
 
 ## Configuration
 

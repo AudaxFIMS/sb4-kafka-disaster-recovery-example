@@ -36,8 +36,8 @@ public class ResilientProducer {
 
     /**
      * Sends a pre-built message with automatic failover across clusters.
-     * Uses kafka_messageKey header as idempotency key (generated UUID if absent).
-     * System headers "source-cluster" and "sent-at" are added/overwritten on each attempt.
+     * Uses KafkaHeaders.KEY as idempotency key (generated UUID if absent).
+     * No system headers are injected — only user-provided headers are sent.
      *
      * @param topic   destination topic
      * @param message pre-built message with payload and headers
