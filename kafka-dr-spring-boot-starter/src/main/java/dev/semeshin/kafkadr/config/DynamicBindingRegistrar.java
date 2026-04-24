@@ -98,7 +98,7 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
             if (KafkaAdminHelper.probeCluster(name, props)) {
                 reachable.add(name);
             } else {
-                log.warn("Cluster '{}' unreachable at startup — will be initialized when it comes online", name);
+                log.warn("[{}] Unreachable at startup — will be initialized later", name);
             }
         }
         return reachable;
@@ -202,7 +202,8 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                 beanDef.setInstanceSupplier(() -> {
                     IdempotencyStore store = beanFactory.getBean(IdempotencyStore.class);
                     MessageHandlerRegistry handlerRegistry = beanFactory.getBean(MessageHandlerRegistry.class);
-                    return new IdempotentConsumer(topic, cluster, store, handlerRegistry.getHandler(topic));
+                    String keyHeader = props.getIdempotency().getKeyHeader();
+                    return new IdempotentConsumer(topic, cluster, store, handlerRegistry.getHandler(topic), keyHeader);
                 });
 
                 registry.registerBeanDefinition(beanName, beanDef);

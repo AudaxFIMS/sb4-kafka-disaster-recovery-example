@@ -64,11 +64,11 @@ public class ActiveClusterManager {
         if (!healthy) {
             successCounts.get(clusterName).set(0);
             int failures = failureCounts.get(clusterName).incrementAndGet();
-            log.warn("Cluster '{}' health check failed ({}/{})", clusterName, failures, failureThreshold);
+            log.warn("DR_EVENT [{}] Health check failed ({}/{})", clusterName, failures, failureThreshold);
 
             if (failures >= failureThreshold && healthStatus.get(clusterName)) {
                 healthStatus.put(clusterName, false);
-                log.warn(">>> Cluster '{}' marked UNHEALTHY <<<", clusterName);
+                log.warn("DR_EVENT [{}] Marked UNHEALTHY", clusterName);
                 reelectActive();
             }
         } else {
@@ -78,16 +78,16 @@ public class ActiveClusterManager {
                 // Skip recovery threshold on initial startup — elect immediately
                 if (!initialElectionDone) {
                     healthStatus.put(clusterName, true);
-                    log.info(">>> Cluster '{}' marked HEALTHY (initial) <<<", clusterName);
+                    log.info("DR_EVENT [{}] Marked HEALTHY (initial)", clusterName);
                     reelectActive();
                     initialElectionDone = true;
                 } else {
                     int successes = successCounts.get(clusterName).incrementAndGet();
-                    log.info("Cluster '{}' recovery check passed ({}/{})", clusterName, successes, recoveryThreshold);
+                    log.info("DR_EVENT [{}] Recovery check passed ({}/{})", clusterName, successes, recoveryThreshold);
 
                     if (successes >= recoveryThreshold) {
                         healthStatus.put(clusterName, true);
-                        log.info(">>> Cluster '{}' marked HEALTHY <<<", clusterName);
+                        log.info("DR_EVENT [{}] Marked HEALTHY", clusterName);
                         reelectActive();
                     }
                 }
@@ -102,14 +102,14 @@ public class ActiveClusterManager {
             if (healthStatus.getOrDefault(candidate, false)) {
                 activeCluster = candidate;
                 if (!candidate.equals(previous) || !initialElectionDone) {
-                    log.warn(">>> CLUSTER SWITCH: '{}' -> '{}' <<<", previous, candidate);
+                    log.warn("DR_EVENT [{}] -> [{}] CLUSTER SWITCH", previous, candidate);
                     eventPublisher.publishEvent(new ClusterSwitchedEvent(this, previous, candidate));
                 }
                 return;
             }
         }
 
-        log.error(">>> ALL CLUSTERS UNHEALTHY — staying on '{}' <<<", activeCluster);
+        log.error("DR_EVENT [{}] ALL CLUSTERS UNHEALTHY — staying", activeCluster);
     }
 
     /**
@@ -122,7 +122,7 @@ public class ActiveClusterManager {
             healthStatus.put(clusterName, false);
             failureCounts.get(clusterName).set(properties.getHealthCheck().getFailureThreshold());
             successCounts.get(clusterName).set(0);
-            log.warn(">>> Cluster '{}' force-marked UNHEALTHY by producer <<<", clusterName);
+            log.warn("DR_EVENT [{}] Force-marked UNHEALTHY by producer", clusterName);
             reelectActive();
         }
     }

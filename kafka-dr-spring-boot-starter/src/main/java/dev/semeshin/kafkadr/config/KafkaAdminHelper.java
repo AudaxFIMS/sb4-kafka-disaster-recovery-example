@@ -68,11 +68,11 @@ public final class KafkaAdminHelper {
 
             if (!toCreate.isEmpty()) {
                 admin.createTopics(toCreate).all().get(timeoutMs, TimeUnit.MILLISECONDS);
-                log.info("Created topics on cluster '{}': {}", cluster,
+                log.info("[{}] Created topics: {}", cluster,
                         toCreate.stream().map(NewTopic::name).toList());
             }
         } catch (Exception e) {
-            log.warn("Topic provisioning failed for cluster '{}': {}", cluster, e.getMessage());
+            log.warn("[{}] Topic provisioning failed: {}", cluster, e.getMessage());
         }
     }
 

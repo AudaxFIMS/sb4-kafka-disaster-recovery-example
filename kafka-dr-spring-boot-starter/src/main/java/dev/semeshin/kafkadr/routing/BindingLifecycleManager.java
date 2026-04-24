@@ -50,7 +50,7 @@ public class BindingLifecycleManager {
         String previous = event.getPreviousCluster();
         String next = event.getNewCluster();
 
-        log.info("Switching bindings: '{}' -> '{}'", previous, next);
+        log.info("DR_EVENT [{}] -> [{}] Switching bindings", previous, next);
 
         stopInputBindings(previous);
         clearProducerCache(previous);
@@ -63,9 +63,9 @@ public class BindingLifecycleManager {
             for (String binding : inputBindingsByCluster.getOrDefault(cluster, List.of())) {
                 try {
                     bindingsController.changeState(binding, State.STOPPED);
-                    log.info("Stopped input binding: {}", binding);
+                    log.info("[{}] Stopped binding: {}", cluster, binding);
                 } catch (Exception e) {
-                    log.error("Failed to stop input binding '{}': {}", binding, e.getMessage());
+                    log.error("[{}] Failed to stop binding '{}': {}", cluster, binding, e.getMessage());
                 }
             }
         } else if (startupState.isInitialized(cluster)) {
@@ -76,7 +76,7 @@ public class BindingLifecycleManager {
 
     private void startInputBindings(String cluster) {
         if (!startupState.isInitialized(cluster)) {
-            log.warn("Cluster '{}' not yet initialized, cannot start bindings", cluster);
+            log.warn("[{}] Not yet initialized, cannot start bindings", cluster);
             return;
         }
 
@@ -85,9 +85,9 @@ public class BindingLifecycleManager {
             for (String binding : inputBindingsByCluster.getOrDefault(cluster, List.of())) {
                 try {
                     bindingsController.changeState(binding, State.STARTED);
-                    log.info("Started input binding: {}", binding);
+                    log.info("[{}] Started binding: {}", cluster, binding);
                 } catch (Exception e) {
-                    log.error("Failed to start input binding '{}': {}", binding, e.getMessage());
+                    log.error("[{}] Failed to start binding '{}': {}", cluster, binding, e.getMessage());
                 }
             }
         } else {
@@ -113,12 +113,12 @@ public class BindingLifecycleManager {
 
             for (String key : keysToRemove) {
                 channelCache.remove(key);
-                log.info("Removed cached producer channel: {}", key);
+                log.info("[{}] Removed cached producer channel: {}", cluster, key);
             }
         } catch (NoSuchFieldException e) {
             log.warn("StreamBridge.channelCache field not found — producer cache cleanup skipped.");
         } catch (Exception e) {
-            log.error("Failed to clear producer cache for cluster '{}': {}", cluster, e.getMessage());
+            log.error("[{}] Failed to clear producer cache: {}", cluster, e.getMessage());
         }
     }
 

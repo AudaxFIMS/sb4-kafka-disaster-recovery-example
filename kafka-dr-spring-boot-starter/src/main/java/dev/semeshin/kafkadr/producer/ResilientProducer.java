@@ -12,7 +12,6 @@ import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -109,27 +108,28 @@ public class ResilientProducer {
                 SendOutcome outcome = trySendWithRetries(topic, cluster, message, messageId);
                 switch (outcome) {
                     case SUCCESS:
+                        log.info("[{}][{}] Message sent, key={}", cluster, topic, messageId);
                         return new SendResult(true, cluster, messageId);
                     case CLUSTER_UNAVAILABLE:
                         triedClusters.add(cluster);
-                        log.warn("Cluster '{}' unavailable, forcing failover", cluster);
+                        log.warn("[{}][{}] Cluster unavailable, forcing failover", cluster, topic);
                         clusterManager.forceUnhealthy(cluster);
                         break;
                     case RETRIES_EXHAUSTED:
                         triedClusters.add(cluster);
-                        log.warn("All {} retries exhausted for cluster '{}', forcing failover", maxRetries, cluster);
+                        log.warn("[{}][{}] All {} retries exhausted, forcing failover", cluster, topic, maxRetries);
                         clusterManager.forceUnhealthy(cluster);
                         break;
                 }
             } catch (SerializationException e) {
-                log.warn("Serialization error, skipping publish: topic={}, messageId={}, error={}",
-                        topic, messageId, e.getMessage());
+                log.warn("[{}][{}] Serialization error, skipping publish: messageId={}, error={}",
+                        cluster, topic, messageId, e.getMessage());
                 return new SendResult(false, cluster, messageId);
             }
         }
 
-        log.error("All {} clusters unavailable. topic={}, messageId={}",
-                triedClusters.size(), topic, messageId);
+        log.error("[{}] All {} clusters unavailable, messageId={}",
+                topic, triedClusters.size(), messageId);
         return new SendResult(false, null, messageId);
     }
 
@@ -138,26 +138,21 @@ public class ResilientProducer {
         String bindingName = KafkaClusterProperties.producerBindingName(topic);
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                Message<?> message = MessageBuilder.fromMessage(originalMessage)
-                        .setHeader("source-cluster", cluster)
-                        .setHeader("sent-at", Instant.now().toString())
-                        .build();
-
-                if (streamBridge.send(bindingName, cluster, message)) {
+                if (streamBridge.send(bindingName, cluster, originalMessage)) {
                     return SendOutcome.SUCCESS;
                 }
-                log.warn("StreamBridge returned false for cluster '{}'", cluster);
+                log.warn("[{}][{}] StreamBridge returned false", cluster, topic);
                 return SendOutcome.CLUSTER_UNAVAILABLE;
             } catch (Exception e) {
                 if (isSerializationError(e)) {
                     throw (e instanceof SerializationException se) ? se : new SerializationException(e.getMessage(), e);
                 }
                 if (isClusterUnavailable(e)) {
-                    log.warn("Cluster '{}' unavailable: {} - {}", cluster, e.getClass().getSimpleName(), e.getMessage());
+                    log.warn("[{}][{}] Cluster unavailable: {} - {}", cluster, topic, e.getClass().getSimpleName(), e.getMessage());
                     return SendOutcome.CLUSTER_UNAVAILABLE;
                 }
-                log.warn("Attempt {}/{} to cluster '{}' failed: {} - {}",
-                        attempt, maxRetries, cluster, e.getClass().getSimpleName(), e.getMessage());
+                log.warn("[{}][{}] Attempt {}/{} failed: {} - {}",
+                        cluster, topic, attempt, maxRetries, e.getClass().getSimpleName(), e.getMessage());
             }
         }
         return SendOutcome.RETRIES_EXHAUSTED;

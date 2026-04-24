@@ -358,9 +358,17 @@ kafka-dr:
   idempotency:
     ttl-seconds: 3600        # How long to remember processed message IDs
     key-prefix: idempotency  # Key prefix for store implementations
+    # key-header: x-idempotency-key  # Optional: use a custom header instead of Kafka key
 ```
 
-Idempotency uses **Kafka record key** (`KafkaHeaders.RECEIVED_KEY`) as the deduplication key — no custom headers required. Messages without a key are processed without idempotency check (with a warning log).
+By default, idempotency uses **Kafka record key** (`KafkaHeaders.RECEIVED_KEY`) as the deduplication key — no custom headers required. To use a custom message header instead, set `key-header`:
+
+| Configuration | Deduplication key source |
+|---|---|
+| *(default, no `key-header`)* | Kafka record key (`KafkaHeaders.RECEIVED_KEY`) |
+| `key-header: x-idempotency-key` | Value of `x-idempotency-key` message header |
+
+Messages without a key (or without the configured header) are processed without idempotency check (with a warning log).
 
 The framework provides `InMemoryIdempotencyStore` as default fallback — it is registered as a `@Bean` in `KafkaDrAutoConfiguration` with `@ConditionalOnMissingBean(IdempotencyStore.class)`. This ensures proper ordering: Spring processes application `@Component` beans first, then auto-configuration `@Bean` methods. If any `IdempotencyStore` is already registered, the in-memory fallback is skipped.
 
@@ -426,7 +434,7 @@ The `messageId` parameter (or `KafkaHeaders.KEY` header) is used as:
 - **Kafka record key** — determines partition assignment
 - **Idempotency key** — `IdempotentConsumer` deduplicates by `KafkaHeaders.RECEIVED_KEY` on the consumer side
 
-System headers `source-cluster` and `sent-at` are added automatically on each send attempt.
+No system headers are injected by the framework — only user-provided headers and `KafkaHeaders.KEY` are sent.
 
 ## How Failover Works
 

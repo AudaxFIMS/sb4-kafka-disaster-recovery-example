@@ -52,7 +52,7 @@ private boolean probe(String brokers, long timeoutMs, Map<String, String> kafkaC
                     .get(timeoutMs, TimeUnit.MILLISECONDS);
             return true;
         } catch (Exception e) {
-            log.debug("Health probe failed for {}: {}", brokers, e.getMessage());
+            log.debug("[{}] Health probe failed: {}", brokers, e.getMessage());
             return false;
         }
     }

@@ -148,11 +148,14 @@ public class KafkaClusterProperties {
     public static class IdempotencyConfig {
         private long ttlSeconds = 3600;
         private String keyPrefix = "idempotency";
+        private String keyHeader;
 
         public long getTtlSeconds() { return ttlSeconds; }
         public void setTtlSeconds(long ttlSeconds) { this.ttlSeconds = ttlSeconds; }
         public String getKeyPrefix() { return keyPrefix; }
         public void setKeyPrefix(String keyPrefix) { this.keyPrefix = keyPrefix; }
+        public String getKeyHeader() { return keyHeader; }
+        public void setKeyHeader(String keyHeader) { this.keyHeader = keyHeader; }
     }
 
     /**

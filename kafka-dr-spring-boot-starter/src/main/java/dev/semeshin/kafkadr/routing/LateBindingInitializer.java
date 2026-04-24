@@ -93,22 +93,22 @@ public class LateBindingInitializer {
                 }
                 initializeCluster(cluster);
                 startupState.addInitializedCluster(cluster);
-                log.info(">>> Late-initialized cluster '{}' — bindings created <<<", cluster);
+                log.info("DR_EVENT [{}] Late-initialized — bindings created", cluster);
 
                 // If this cluster is already active (switch happened before bindings existed), start consumers now
                 if (cluster.equals(clusterManager.getActiveCluster())) {
                     startBindings(cluster);
-                    log.info(">>> Started late bindings for already-active cluster '{}' <<<", cluster);
+                    log.info("[{}] Started late bindings (already-active)", cluster);
                 }
             } catch (Exception e) {
-                log.error("Failed to late-initialize cluster '{}': {}", cluster, e.getMessage(), e);
+                log.error("[{}] Failed to late-initialize: {}", cluster, e.getMessage(), e);
             }
         }
     }
 
     @SuppressWarnings("unchecked")
     private void initializeCluster(String cluster) {
-        log.info("Late-initializing cluster '{}'...", cluster);
+        log.info("[{}] Late-initializing...", cluster);
 
         Binder<MessageChannel, ? extends ConsumerProperties, ?> binder =
                 (Binder<MessageChannel, ? extends ConsumerProperties, ?>)
@@ -121,7 +121,7 @@ public class LateBindingInitializer {
 
             Consumer<Message<?>> handler = functionBeans.get(functionName);
             if (handler == null) {
-                log.warn("No function bean found for '{}', skipping", functionName);
+                log.warn("[{}][{}] No function bean found, skipping", cluster, topic);
                 continue;
             }
 
@@ -131,7 +131,7 @@ public class LateBindingInitializer {
                 try {
                     handler.accept(message);
                 } catch (Exception e) {
-                    log.error("Error in late-bound consumer {}: {}", functionName, e.getMessage());
+                    log.error("[{}][{}] Error in late-bound consumer: {}", cluster, topic, e.getMessage());
                 }
             });
 
@@ -167,7 +167,7 @@ public class LateBindingInitializer {
                     .bindConsumer(destination, group, channel, extendedProps);
 
             lateBindings.put(bindingName, binding);
-            log.info("Created late binding: {} (topic={}, cluster={})", bindingName, topic, cluster);
+            log.info("[{}][{}] Created late binding: {}", cluster, topic, bindingName);
         }
     }
 
@@ -181,7 +181,7 @@ public class LateBindingInitializer {
             var binding = lateBindings.get(bindingName);
             if (binding != null) {
                 binding.start();
-                log.info("Started late binding: {}", bindingName);
+                log.info("[{}][{}] Started late binding", cluster, consumer.getTopic());
             }
         }
     }
@@ -195,7 +195,7 @@ public class LateBindingInitializer {
             var binding = lateBindings.get(bindingName);
             if (binding != null) {
                 binding.stop();
-                log.info("Stopped late binding: {}", bindingName);
+                log.info("[{}][{}] Stopped late binding", cluster, consumer.getTopic());
             }
         }
     }
