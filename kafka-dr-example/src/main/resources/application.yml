@@ -98,6 +98,7 @@ logging:
     org.apache.kafka.clients.NetworkClient: ERROR
     org.apache.kafka.clients.admin.internals.AdminMetadataManager: ERROR
     org.apache.kafka.clients.Metadata: ERROR
+    org.apache.kafka.clients.FetchSessionHandler: ERROR
     org.springframework.kafka.support.LoggingProducerListener: OFF
 
 management:
