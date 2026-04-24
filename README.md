@@ -70,7 +70,10 @@ kafka-dr-spring-boot-starter/             # Framework (reusable JAR)
     consumer/
       MessageProcessor.java                # Marker interface — implement in your app
       MessageHandlerRegistry.java          # Discovers handlers across all MessageProcessor beans
-      IdempotentConsumer.java              # Deduplication wrapper
+      IdempotentConsumer.java              # Deduplication wrapper + timestamp tracking
+      LastProcessedTimestampTracker.java   # Tracks last processed timestamp per topic
+      TimestampSeekRebalanceListener.java  # Seeks consumer by timestamp on failover
+      TimestampStore.java                  # Interface — implement to persist timestamps across restarts
     producer/
       ResilientProducer.java               # Send with automatic failover
     routing/
@@ -103,6 +106,16 @@ kafka-dr-example/                          # Example application
     PaymentEvent.avsc                      # Avro schema
   src/main/resources/
     application.yml
+
+kafka-dr-example-timestamp-seek/           # Example with timestamp-based seek on failover
+  src/main/java/dev/semeshin/kafkadr/
+    TimestampSeekExampleApp.java            # Entry point
+    handler/
+      EventMessageProcessor.java           # Simple string event handler
+    store/
+      RedisTimestampStore.java             # TimestampStore impl (persists across restarts)
+  src/main/resources/
+    application.yml                        # seek-by-timestamp: true
 
 docker-compose.yml                         # 3 Kafka clusters + Schema Registry + Redis
 ```
@@ -210,6 +223,25 @@ mvn spring-boot:run
 curl -s localhost:8080/api/messages/status | jq   # running on secondary
 docker-compose start kafka-primary                 # auto failback after ~15-20s
 ```
+
+### Example: Timestamp-Based Seek
+
+The `kafka-dr-example-timestamp-seek` module demonstrates a minimal app with cross-cluster replication support. When primary fails, the consumer on secondary seeks to the offset matching the last processed timestamp — skipping already-handled replicated messages.
+
+```bash
+# Build starter + run the timestamp-seek example
+cd kafka-dr-spring-boot-starter && mvn clean install -DskipTests
+cd ../kafka-dr-example-timestamp-seek && mvn clean spring-boot:run
+```
+
+Key difference from the main example — one line in `application.yml`:
+```yaml
+kafka-dr:
+  failover:
+    seek-by-timestamp: true
+```
+
+The app has no Redis, no Avro, no custom idempotency store — just the starter + a simple `MessageProcessor` + the timestamp seek flag.
 
 ## Configuration
 
@@ -351,6 +383,48 @@ kafka-dr:
     recovery-threshold: 3    # Consecutive successes → healthy
 ```
 
+### Failover
+
+```yaml
+kafka-dr:
+  failover:
+    seek-by-timestamp: true    # default: false
+```
+
+When `seek-by-timestamp: true` and cross-cluster replication (e.g. MirrorMaker 2) is active, consumers on the new cluster seek to the offset matching the timestamp of the last processed message. This skips already-processed replicated data instead of reprocessing from the committed offset.
+
+How it works:
+1. `IdempotentConsumer` tracks the latest `RECEIVED_TIMESTAMP` per topic via `LastProcessedTimestampTracker`
+2. On cluster switch, the new consumer receives partition assignments
+3. `TimestampSeekRebalanceListener` calls `consumer.offsetsForTimes()` with the last timestamp and seeks to the matching offset
+4. `IdempotentConsumer` provides additional deduplication for messages in the timestamp boundary window
+
+When `seek-by-timestamp: false` (default), consumers use standard Kafka offset management (committed offsets / `auto.offset.reset`).
+
+**Timestamp storage:** `LastProcessedTimestampTracker` keeps timestamps in memory by default. This is sufficient for failover during normal operation — no additional setup needed. `TimestampStore` is an optional interface for persisting timestamps to an external store (Redis, DB, etc.).
+
+| Setup | Failover (no restart) | After restart + failover |
+|---|---|---|
+| `seek-by-timestamp: true` (no `TimestampStore`) | Seek works (in-memory timestamps) | Fallback to committed offsets (timestamps lost, safe) |
+| `seek-by-timestamp: true` + `TimestampStore` impl | Seek works (persisted timestamps) | Seek works (timestamps restored from store) |
+| `seek-by-timestamp: false` | No seek, committed offsets | No seek, committed offsets |
+
+To persist timestamps across restarts, implement `TimestampStore` and register as `@Component`:
+
+```java
+@Component
+public class MyTimestampStore implements TimestampStore {
+    @Override
+    public void save(String topic, long timestamp) { /* persist */ }
+    @Override
+    public Long load(String topic) { /* read */ }
+    @Override
+    public Map<String, Long> loadAll() { /* read all */ }
+}
+```
+
+The `kafka-dr-example-timestamp-seek` module includes `RedisTimestampStore` as a reference implementation.
+
 ### Idempotency
 
 ```yaml
@@ -459,6 +533,26 @@ When a cluster recovers after startup:
 4. Provisions topics if `auto-create-topics` is enabled
 5. If cluster is already active → starts consumers immediately
 
+### Timestamp-Based Seek on Failover
+
+When `kafka-dr.failover.seek-by-timestamp: true` and cross-cluster replication is active:
+
+```
+Cluster switch: primary -> secondary
+  1. BindingLifecycleManager stops primary consumers, starts secondary consumers
+  2. Secondary consumer receives partition assignments
+  3. TimestampSeekRebalanceListener:
+     - Gets last processed timestamp from LastProcessedTimestampTracker
+     - Calls consumer.offsetsForTimes(timestamp) on each partition
+     - Seeks to the offset matching that timestamp
+  4. Consumer reads from the seek point, not from offset 0 or latest
+  5. IdempotentConsumer deduplicates any overlap in the boundary window
+```
+
+```
+DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=1714003200000)
+```
+
 ### Producer Error Handling
 
 | Error type | Behavior |
@@ -480,6 +574,7 @@ When a cluster recovers after startup:
 | Binder configs for all clusters, bindings only for reachable | Binder child context creation blocks; environment properties alone are safe |
 | Kafka key as idempotency key | Uses standard `KafkaHeaders.KEY` / `RECEIVED_KEY` instead of custom headers; always available, also drives partition assignment |
 | Topic names converted to camelCase for binding names | Dots in topic names break Spring property binding |
+| Timestamp-based seek via `ListenerContainerCustomizer` | `TimestampSeekRebalanceListener` uses `offsetsForTimes()` on partition assignment; combined with idempotency for boundary deduplication |
 
 ## Tech Stack
 

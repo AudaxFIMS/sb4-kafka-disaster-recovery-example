@@ -21,17 +21,20 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
     private final IdempotencyStore idempotencyStore;
     private final Consumer<Message<?>> delegate;
     private final String keyHeader;
+    private final LastProcessedTimestampTracker timestampTracker;
 
     public IdempotentConsumer(String consumerName,
                               String clusterName,
                               IdempotencyStore idempotencyStore,
                               Consumer<Message<?>> delegate,
-                              String keyHeader) {
+                              String keyHeader,
+                              LastProcessedTimestampTracker timestampTracker) {
         this.consumerName = consumerName;
         this.clusterName = clusterName;
         this.idempotencyStore = idempotencyStore;
         this.delegate = delegate;
         this.keyHeader = keyHeader;
+        this.timestampTracker = timestampTracker;
     }
 
     @Override
@@ -52,6 +55,15 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
 
         log.info("[{}][{}] Processing: key={}", clusterName, consumerName, key);
         delegate.accept(msg);
+        trackTimestamp(msg);
+    }
+
+    private void trackTimestamp(Message<?> msg) {
+        if (timestampTracker == null) return;
+        Long timestamp = msg.getHeaders().get(KafkaHeaders.RECEIVED_TIMESTAMP, Long.class);
+        if (timestamp != null) {
+            timestampTracker.update(consumerName, timestamp);
+        }
     }
 
     private String extractKey(Message<?> msg) {

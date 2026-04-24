@@ -20,6 +20,7 @@ public class KafkaClusterProperties {
     private Map<String, Object> defaultConsumerProperties = new LinkedHashMap<>();
     private Map<String, Object> defaultProducerProperties = new LinkedHashMap<>();
     private boolean autoCreateTopics = false;
+    private FailoverConfig failover = new FailoverConfig();
     private HealthCheckConfig healthCheck = new HealthCheckConfig();
     private IdempotencyConfig idempotency = new IdempotencyConfig();
 
@@ -37,6 +38,8 @@ public class KafkaClusterProperties {
     public void setDefaultProducerProperties(Map<String, Object> defaultProducerProperties) { this.defaultProducerProperties = defaultProducerProperties; }
     public boolean isAutoCreateTopics() { return autoCreateTopics; }
     public void setAutoCreateTopics(boolean autoCreateTopics) { this.autoCreateTopics = autoCreateTopics; }
+    public FailoverConfig getFailover() { return failover; }
+    public void setFailover(FailoverConfig failover) { this.failover = failover; }
     public HealthCheckConfig getHealthCheck() { return healthCheck; }
     public void setHealthCheck(HealthCheckConfig healthCheck) { this.healthCheck = healthCheck; }
     public IdempotencyConfig getIdempotency() { return idempotency; }
@@ -127,6 +130,19 @@ public class KafkaClusterProperties {
         public void setContentType(String contentType) { this.contentType = contentType; }
         public Map<String, Object> getProperties() { return properties; }
         public void setProperties(Map<String, Object> properties) { this.properties = properties; }
+    }
+
+    public static class FailoverConfig {
+        /**
+         * When true and cross-cluster replication is active, consumers on the new cluster
+         * seek to the offset matching the timestamp of the last processed message,
+         * skipping already-processed replicated data. Idempotency store provides
+         * additional deduplication for messages in the boundary window.
+         */
+        private boolean seekByTimestamp = false;
+
+        public boolean isSeekByTimestamp() { return seekByTimestamp; }
+        public void setSeekByTimestamp(boolean seekByTimestamp) { this.seekByTimestamp = seekByTimestamp; }
     }
 
     public static class HealthCheckConfig {

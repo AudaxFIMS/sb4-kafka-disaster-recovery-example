@@ -1,6 +1,7 @@
 package dev.semeshin.kafkadr.config;
 
 import dev.semeshin.kafkadr.consumer.IdempotentConsumer;
+import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.consumer.MessageHandlerRegistry;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import org.slf4j.Logger;
@@ -202,8 +203,9 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                 beanDef.setInstanceSupplier(() -> {
                     IdempotencyStore store = beanFactory.getBean(IdempotencyStore.class);
                     MessageHandlerRegistry handlerRegistry = beanFactory.getBean(MessageHandlerRegistry.class);
+                    LastProcessedTimestampTracker tracker = beanFactory.getBean(LastProcessedTimestampTracker.class);
                     String keyHeader = props.getIdempotency().getKeyHeader();
-                    return new IdempotentConsumer(topic, cluster, store, handlerRegistry.getHandler(topic), keyHeader);
+                    return new IdempotentConsumer(topic, cluster, store, handlerRegistry.getHandler(topic), keyHeader, tracker);
                 });
 
                 registry.registerBeanDefinition(beanName, beanDef);
