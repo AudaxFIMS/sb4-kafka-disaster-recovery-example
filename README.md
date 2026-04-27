@@ -425,9 +425,23 @@ kafka-dr:
 kafka-dr:
   failover:
     seek-by-timestamp: true    # default: false
+    failback-after: "23:59:59" # optional: failback only after this time of day
 ```
 
-When `seek-by-timestamp: true` and cross-cluster replication (e.g. MirrorMaker 2) is active, consumers on the new cluster seek to the offset matching the timestamp of the last processed message. This skips already-processed replicated data instead of reprocessing from the committed offset.
+**`seek-by-timestamp`** — when `true` and cross-cluster replication (e.g. MirrorMaker 2) is active, consumers on the new cluster seek to the offset matching the timestamp of the last processed message. This skips already-processed replicated data instead of reprocessing from the committed offset.
+
+**`failback-after`** — prevents **any** automatic failback until the specified time of day (HH:mm:ss). After a failover, the app stays on whatever healthy cluster it lands on — no failback to any higher-priority cluster until the clock reaches this time. Useful for deferring failback to a maintenance window.
+
+| Step | Event | `failback-after` not set | `failback-after: "23:59:59"` |
+|---|---|---|---|
+| 1 | Primary down at 10:00 | Switch → secondary | Switch → secondary |
+| 2 | Primary recovers at 10:05 | Instant failback → primary | **Stay on secondary** |
+| 3 | Secondary down at 11:00 | Switch → tertiary | Switch → tertiary (failover is always instant) |
+| 4 | Secondary recovers at 11:05 | Instant failback → secondary | **Stay on tertiary** |
+| 5 | Primary recovers at 12:00 | Instant failback → primary | **Stay on tertiary** |
+| 6 | Clock reaches 00:00 | — | Failback → primary (highest priority healthy) |
+
+> **Note:** `failback-after` blocks **all** failback (return to any higher-priority cluster) while the current cluster is healthy. Failover (leaving an unhealthy cluster) is always immediate regardless of this setting. After a successful failback the gate resets — subsequent failovers will again be held until the configured time.
 
 How it works:
 1. `IdempotentConsumer` tracks the latest `RECEIVED_TIMESTAMP` per topic via `LastProcessedTimestampTracker`
@@ -611,6 +625,7 @@ DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=171400320000
 | Kafka key as idempotency key | Uses standard `KafkaHeaders.KEY` / `RECEIVED_KEY` instead of custom headers; always available, also drives partition assignment |
 | Topic names converted to camelCase for binding names | Dots in topic names break Spring property binding |
 | Timestamp-based seek via `ListenerContainerCustomizer` | `TimestampSeekRebalanceListener` uses `offsetsForTimes()` on partition assignment; combined with idempotency for boundary deduplication |
+| `failback-after` time-of-day gate | Blocks all failback (not failover) until specified clock time; once a failover occurs, the app stays on the current cluster until the gate opens regardless of how many higher-priority clusters recover |
 
 ## Tech Stack
 

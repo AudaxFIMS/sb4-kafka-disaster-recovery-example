@@ -141,8 +141,18 @@ public class KafkaClusterProperties {
          */
         private boolean seekByTimestamp = false;
 
+        /**
+         * Time of day (HH:mm:ss) after which failback to a higher-priority cluster is allowed.
+         * When set, after a failover the app stays on the current cluster until this time.
+         * Null or empty = immediate failback (default).
+         * Example: "23:59:59" = failback only after midnight maintenance window.
+         */
+        private String failbackAfter;
+
         public boolean isSeekByTimestamp() { return seekByTimestamp; }
         public void setSeekByTimestamp(boolean seekByTimestamp) { this.seekByTimestamp = seekByTimestamp; }
+        public String getFailbackAfter() { return failbackAfter; }
+        public void setFailbackAfter(String failbackAfter) { this.failbackAfter = failbackAfter; }
     }
 
     public static class HealthCheckConfig {

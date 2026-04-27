@@ -7,6 +7,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalTime;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +27,7 @@ public class ActiveClusterManager {
     private final List<String> clustersByPriority;
 
     private volatile String activeCluster;
+    private volatile boolean failoverOccurred = false;
 
     private final ConcurrentHashMap<String, AtomicInteger> failureCounts = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicInteger> successCounts = new ConcurrentHashMap<>();
@@ -97,19 +99,51 @@ public class ActiveClusterManager {
 
     private void reelectActive() {
         String previous = activeCluster;
+        boolean previousHealthy = healthStatus.getOrDefault(previous, false);
 
         for (String candidate : clustersByPriority) {
-            if (healthStatus.getOrDefault(candidate, false)) {
-                activeCluster = candidate;
-                if (!candidate.equals(previous) || !initialElectionDone) {
-                    log.warn("DR_EVENT [{}] -> [{}] CLUSTER SWITCH", previous, candidate);
-                    eventPublisher.publishEvent(new ClusterSwitchedEvent(this, previous, candidate));
-                }
+            if (!healthStatus.getOrDefault(candidate, false)) {
+                continue;
+            }
+
+            if (candidate.equals(previous)) {
                 return;
             }
+
+            boolean isFailback = clustersByPriority.indexOf(candidate) < clustersByPriority.indexOf(previous);
+
+            // Block ANY failback while current cluster is healthy and time gate is active
+            if (initialElectionDone && isFailback && previousHealthy
+                    && failoverOccurred && isFailbackBlocked()) {
+                log.debug("DR_EVENT [{}] Failback to [{}] blocked until {}",
+                        previous, candidate, properties.getFailover().getFailbackAfter());
+                return;
+            }
+
+            activeCluster = candidate;
+            if (!candidate.equals(previous) || !initialElectionDone) {
+                if (isFailback) {
+                    failoverOccurred = false;
+                } else {
+                    failoverOccurred = true;
+                }
+                log.warn("DR_EVENT [{}] -> [{}] CLUSTER SWITCH{}", previous, candidate,
+                        isFailback ? " (failback)" : "");
+                eventPublisher.publishEvent(new ClusterSwitchedEvent(this, previous, candidate));
+            }
+            return;
         }
 
         log.error("DR_EVENT [{}] ALL CLUSTERS UNHEALTHY — staying", activeCluster);
+    }
+
+    private boolean isFailbackBlocked() {
+        String failbackAfter = properties.getFailover().getFailbackAfter();
+        if (failbackAfter == null || failbackAfter.isBlank()) {
+            return false;
+        }
+        LocalTime threshold = LocalTime.parse(failbackAfter);
+        return LocalTime.now().isBefore(threshold);
     }
 
     /**
