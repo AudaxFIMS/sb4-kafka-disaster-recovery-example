@@ -118,7 +118,9 @@ kafka-dr-example-timestamp-seek/           # Example with timestamp-based seek o
   src/main/resources/
     application.yml                        # seek-by-timestamp: true
 
-docker-compose.yml                         # 3 Kafka clusters + Schema Registry + Redis
+docker-compose.yml                         # 3 Kafka + MirrorMaker 2 + Schema Registry + Redis
+mm2/
+  mm2.properties                           # MirrorMaker 2 config (bidirectional replication)
 ```
 
 ## Quick Start
@@ -225,24 +227,57 @@ curl -s localhost:8080/api/messages/status | jq   # running on secondary
 docker-compose start kafka-primary                 # auto failback after ~15-20s
 ```
 
-### Example: Timestamp-Based Seek
+### Example: Timestamp-Based Seek with Cross-Cluster Replication
 
-The `kafka-dr-example-timestamp-seek` module demonstrates a minimal app with cross-cluster replication support. When primary fails, the consumer on secondary seeks to the offset matching the last processed timestamp — skipping already-handled replicated messages.
+The `kafka-dr-example-timestamp-seek` module demonstrates failover with MirrorMaker 2 replication. When primary fails, the consumer on secondary seeks to the offset matching the last processed timestamp — skipping already-handled replicated messages.
+
+**Infrastructure** includes MirrorMaker 2 (`mirror-maker` service) which replicates topics bidirectionally between primary and secondary using `IdentityReplicationPolicy` (preserves original topic names).
 
 ```bash
-# Build starter + run the timestamp-seek example
+# 1. Start all infrastructure including MirrorMaker 2
+docker-compose up -d
+
+# 2. Build starter
 cd kafka-dr-spring-boot-starter && mvn clean install -DskipTests
+
+# 3. Run the timestamp-seek example
 cd ../kafka-dr-example-timestamp-seek && mvn clean spring-boot:run
 ```
 
-Key difference from the main example — one line in `application.yml`:
+**Test the timestamp seek:**
+
+```bash
+# Send messages to primary
+curl -X POST 'localhost:8080/api/messages/events?message=msg1&messageId=key-1'
+curl -X POST 'localhost:8080/api/messages/events?message=msg2&messageId=key-2'
+curl -X POST 'localhost:8080/api/messages/events?message=msg3&messageId=key-3'
+
+# Wait 10-15s for MirrorMaker to replicate to secondary
+sleep 15
+
+# Kill primary — triggers failover to secondary
+docker-compose stop kafka-primary
+
+# Check logs — you should see:
+#   DR_EVENT [primary] -> [secondary] CLUSTER SWITCH
+#   DR_EVENT [events] Seeked partition 0 to offset N (timestamp=...)
+# Consumer skips already-processed replicated messages
+
+# Send more messages — go to secondary
+curl -X POST 'localhost:8080/api/messages/events?message=after-failover'
+
+# Restore primary — auto failback
+docker-compose start kafka-primary
+```
+
+Key configuration:
 ```yaml
 kafka-dr:
   failover:
-    seek-by-timestamp: true
+    seek-by-timestamp: true    # Seek by last processed timestamp on cluster switch
 ```
 
-The app has no Avro — just the starter + a simple `MessageProcessor` + timestamp seek. It includes `RedisTimestampStore` to persist timestamps across restarts (requires Redis).
+The app includes `RedisTimestampStore` to persist timestamps across restarts. MirrorMaker 2 config is in `mm2/mm2.properties`.
 
 ## Configuration
 

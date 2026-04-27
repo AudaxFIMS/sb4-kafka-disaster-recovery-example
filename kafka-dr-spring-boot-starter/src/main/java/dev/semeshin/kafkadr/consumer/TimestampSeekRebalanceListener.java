@@ -55,7 +55,7 @@ public class TimestampSeekRebalanceListener implements ConsumerAwareRebalanceLis
                 log.info("DR_EVENT [{}] Seeked partition {} to offset {} (timestamp={})",
                         tp.topic(), tp.partition(), offsetAndTimestamp.offset(), offsetAndTimestamp.timestamp());
             } else {
-                log.info("[{}] No offset found for timestamp on partition {}, using default",
+                log.info("DR_EVENT [{}] No offset found for timestamp on partition {}, using default",
                         tp.topic(), tp.partition());
             }
         }

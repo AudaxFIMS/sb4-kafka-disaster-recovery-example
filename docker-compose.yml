@@ -54,6 +54,20 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       CLUSTER_ID: QkE3OEVBNTcwNTJENDM2Qg
 
+  # MirrorMaker 2: full mesh replication between all 3 clusters
+  mirror-maker:
+    image: apache/kafka:3.9.0
+    container_name: mirror-maker
+    depends_on:
+      - kafka-primary
+      - kafka-secondary
+      - kafka-tertiary
+    volumes:
+      - ./mm2/mm2.properties:/opt/kafka/config/mm2.properties:ro
+    command: /opt/kafka/bin/connect-mirror-maker.sh /opt/kafka/config/mm2.properties
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+
   schema-registry:
     image: confluentinc/cp-schema-registry:7.9.0
     container_name: schema-registry
