@@ -109,30 +109,32 @@ public class ClusterHealthChecker implements HealthIndicator {
                     .allTopicNames()
                     .get(timeoutMs, TimeUnit.MILLISECONDS);
 
-            Set<Integer> activeNodeIds = new HashSet<>();
+            int minNodes = properties.getHealthCheck().getDeepProbeMinNodes();
             int minIsr = properties.getHealthCheck().getDeepProbeMinIsr();
 
             for (Map.Entry<String, TopicDescription> desc : descriptions.entrySet()) {
+                String topicName = desc.getKey();
+                Set<Integer> topicActiveNodes = new HashSet<>();
+
                 for (TopicPartitionInfo partition : desc.getValue().partitions()) {
                     Node leader = partition.leader();
                     if (leader != null && leader.id() != Node.noNode().id()) {
-                        activeNodeIds.add(leader.id());
+                        topicActiveNodes.add(leader.id());
                     }
 
                     if (minIsr > 0 && partition.isr().size() < minIsr) {
-                        log.warn("DR_EVENT [{}] Partition {}-{} ISR={}, required {}",
-                                clusterName, desc.getKey(), partition.partition(),
+                        log.warn("DR_EVENT [{}][{}] Partition {} ISR={}, required {}",
+                                clusterName, topicName, partition.partition(),
                                 partition.isr().size(), minIsr);
                         return false;
                     }
                 }
-            }
 
-            int minNodes = properties.getHealthCheck().getDeepProbeMinNodes();
-            if (activeNodeIds.size() < minNodes) {
-                log.warn("DR_EVENT [{}] Only {} active node(s), required {}",
-                        clusterName, activeNodeIds.size(), minNodes);
-                return false;
+                if (topicActiveNodes.size() < minNodes) {
+                    log.warn("DR_EVENT [{}][{}] Only {} active node(s), required {}",
+                            clusterName, topicName, topicActiveNodes.size(), minNodes);
+                    return false;
+                }
             }
 
             return true;
