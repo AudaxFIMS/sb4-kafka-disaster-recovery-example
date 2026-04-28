@@ -417,7 +417,34 @@ kafka-dr:
     timeout-ms: 3000         # AdminClient timeout per probe
     failure-threshold: 3     # Consecutive failures → unhealthy (also retry count for send errors)
     recovery-threshold: 3    # Consecutive successes → healthy
+    deep-probe: true         # default: false
+    deep-probe-min-nodes: 2  # min unique active leader nodes (default: 1)
+    deep-probe-min-isr: 2    # min in-sync replicas per partition (default: 0 — disabled)
 ```
+
+**Health check modes:**
+
+| Mode | Check | Detects | Writes data |
+|---|---|---|---|
+| `deep-probe: false` (default) | `describeCluster()` | Controller/broker process down, network unreachable | No |
+| `deep-probe: true` | `describeCluster()` + `describeTopics()` + leaders + ISR | All of the above + not enough active nodes + under-replicated partitions | No |
+
+With `deep-probe: true`, the health checker calls `describeTopics()` on all configured topics and verifies:
+- **Active nodes** — counts unique partition leader nodes. If fewer than `deep-probe-min-nodes`, cluster is unhealthy.
+- **ISR (in-sync replicas)** — checks `partition.isr().size()` per partition. If any partition has fewer than `deep-probe-min-isr` replicas in sync, cluster is unhealthy. Set to `0` (default) to disable ISR check.
+
+This is a read-only metadata check — no test messages are produced.
+
+**Deep probe examples:**
+
+| Scenario | `min-nodes: 1` | `min-nodes: 2` | `min-isr: 2` |
+|---|---|---|---|
+| 3 nodes, all healthy | HEALTHY | HEALTHY | HEALTHY |
+| 3 nodes, 1 down | HEALTHY | HEALTHY | Depends on replication |
+| 3 nodes, 2 down | HEALTHY | UNHEALTHY | UNHEALTHY |
+| Leader alive, 1 replica lagging (ISR=1) | HEALTHY | HEALTHY | UNHEALTHY |
+
+> **Recommended for production.** Without deep probe, a scenario is possible where the cluster controller responds to metadata queries but brokers can't serve data. The basic probe reports "healthy" while all produce/consume operations fail, delaying failover.
 
 ### Failover
 
@@ -626,6 +653,7 @@ DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=171400320000
 | Topic names converted to camelCase for binding names | Dots in topic names break Spring property binding |
 | Timestamp-based seek via `ListenerContainerCustomizer` | `TimestampSeekRebalanceListener` uses `offsetsForTimes()` on partition assignment; combined with idempotency for boundary deduplication |
 | `failback-after` time-of-day gate | Blocks all failback (not failover) until specified clock time; once a failover occurs, the app stays on the current cluster until the gate opens regardless of how many higher-priority clusters recover |
+| Deep probe via `describeTopics()` | Read-only check: partition leader count + ISR size; catches "controller alive, brokers dead" and under-replicated partitions without writing test data |
 
 ## Tech Stack
 

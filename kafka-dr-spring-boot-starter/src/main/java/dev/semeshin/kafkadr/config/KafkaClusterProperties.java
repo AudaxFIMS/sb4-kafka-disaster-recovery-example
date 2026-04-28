@@ -161,6 +161,28 @@ public class KafkaClusterProperties {
         private int failureThreshold = 3;
         private int recoveryThreshold = 3;
 
+        /**
+         * When true, health check verifies partition leader availability via
+         * describeTopics() in addition to describeCluster(). Catches scenarios
+         * where cluster metadata is reachable but brokers can't serve data
+         * (no partition leaders). No data is written — read-only check.
+         */
+        private boolean deepProbe = false;
+
+        /**
+         * Minimum number of active nodes (unique partition leaders) required
+         * for the cluster to be considered healthy during deep probe.
+         * Default: 1 — at least one active leader must exist.
+         */
+        private int deepProbeMinNodes = 1;
+
+        /**
+         * Minimum number of in-sync replicas (ISR) per partition required
+         * for the cluster to be considered healthy during deep probe.
+         * Default: 0 — ISR check disabled (only leader presence is verified).
+         */
+        private int deepProbeMinIsr = 0;
+
         public long getIntervalMs() { return intervalMs; }
         public void setIntervalMs(long intervalMs) { this.intervalMs = intervalMs; }
         public long getTimeoutMs() { return timeoutMs; }
@@ -169,6 +191,12 @@ public class KafkaClusterProperties {
         public void setFailureThreshold(int failureThreshold) { this.failureThreshold = failureThreshold; }
         public int getRecoveryThreshold() { return recoveryThreshold; }
         public void setRecoveryThreshold(int recoveryThreshold) { this.recoveryThreshold = recoveryThreshold; }
+        public boolean isDeepProbe() { return deepProbe; }
+        public void setDeepProbe(boolean deepProbe) { this.deepProbe = deepProbe; }
+        public int getDeepProbeMinNodes() { return deepProbeMinNodes; }
+        public void setDeepProbeMinNodes(int deepProbeMinNodes) { this.deepProbeMinNodes = deepProbeMinNodes; }
+        public int getDeepProbeMinIsr() { return deepProbeMinIsr; }
+        public void setDeepProbeMinIsr(int deepProbeMinIsr) { this.deepProbeMinIsr = deepProbeMinIsr; }
     }
 
     public static class IdempotencyConfig {
