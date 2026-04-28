@@ -1,5 +1,6 @@
 package dev.semeshin.kafkadr;
 
+import dev.semeshin.kafkadr.config.DynamicBindingRegistrar;
 import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.consumer.TimestampSeekRebalanceListener;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
@@ -23,17 +24,22 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 public class KafkaDrAutoConfiguration {
 
+    /**
+     * Must be static — ensures BeanDefinitionRegistryPostProcessor runs before
+     * Spring Cloud Function processes function definitions. This is critical when
+     * the consuming app has a different base package than the starter.
+     */
+    @Bean
+    static DynamicBindingRegistrar dynamicBindingRegistrar() {
+        return new DynamicBindingRegistrar();
+    }
+
     @Bean
     @ConditionalOnMissingBean(IdempotencyStore.class)
     public InMemoryIdempotencyStore inMemoryIdempotencyStore() {
         return new InMemoryIdempotencyStore();
     }
 
-    /**
-     * When seek-by-timestamp is enabled, customizes Kafka listener containers
-     * to seek to the offset matching the last processed timestamp on partition assignment.
-     * This skips already-processed messages when switching to a cluster with replicated data.
-     */
     @Bean
     @ConditionalOnProperty(name = "kafka-dr.failover.seek-by-timestamp", havingValue = "true")
     public ListenerContainerCustomizer<AbstractMessageListenerContainer<?, ?>> timestampSeekCustomizer(

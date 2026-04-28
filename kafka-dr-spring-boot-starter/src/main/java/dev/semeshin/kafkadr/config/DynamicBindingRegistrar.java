@@ -15,12 +15,14 @@ import org.springframework.context.EnvironmentAware;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.MapPropertySource;
-import org.springframework.stereotype.Component;
-
 import java.util.*;
 import java.util.function.Consumer;
 
-@Component
+/**
+ * Registered as a static @Bean in KafkaDrAutoConfiguration to ensure
+ * it runs before Spring Cloud Function processes function definitions.
+ * Must NOT be @Component — component scan from auto-configuration runs too late.
+ */
 public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProcessor, EnvironmentAware {
 
     private static final Logger log = LoggerFactory.getLogger(DynamicBindingRegistrar.class);
