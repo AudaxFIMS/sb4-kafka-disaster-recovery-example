@@ -1,6 +1,5 @@
 package dev.semeshin.kafkadr;
 
-import dev.semeshin.kafkadr.config.DynamicBindingRegistrar;
 import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.consumer.TimestampSeekRebalanceListener;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
@@ -23,16 +22,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @ComponentScan("dev.semeshin.kafkadr")
 @EnableScheduling
 public class KafkaDrAutoConfiguration {
-
-    /**
-     * Must be static — ensures BeanDefinitionRegistryPostProcessor runs before
-     * Spring Cloud Function processes function definitions. This is critical when
-     * the consuming app has a different base package than the starter.
-     */
-    @Bean
-    static DynamicBindingRegistrar dynamicBindingRegistrar() {
-        return new DynamicBindingRegistrar();
-    }
 
     @Bean
     @ConditionalOnMissingBean(IdempotencyStore.class)
