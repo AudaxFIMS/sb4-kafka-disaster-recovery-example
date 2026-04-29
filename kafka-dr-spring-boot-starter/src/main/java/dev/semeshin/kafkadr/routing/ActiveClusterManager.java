@@ -106,7 +106,7 @@ public class ActiveClusterManager {
                 continue;
             }
 
-            if (candidate.equals(previous)) {
+            if (candidate.equals(previous) && initialElectionDone) {
                 return;
             }
 
