@@ -6,7 +6,8 @@ The project is structured as a multi-module Maven build:
 
 - **`kafka-dr-spring-boot-starter`** — reusable framework (add as dependency)
 - **`kafka-dr-example`** — example application with Avro, Redis idempotency, REST API
-- **`kafka-dr-example-timestamp-seek`** — minimal example with timestamp-based seek on failover
+- **`kafka-dr-example-timestamp-seek`** — example with timestamp-based seek on failover
+- **`kafka-dr-example-multinode`** — example with multi-node clusters and deep probe health check
 
 > **Important: Cross-cluster replication is required.**
 > This framework handles failover at the *application level* — switching producers and consumers between clusters. It does **not** replicate data between Kafka clusters. To ensure no messages are lost, configure cross-cluster replication independently using [MirrorMaker 2](https://kafka.apache.org/documentation/#georeplication), Confluent Cluster Linking, or Confluent Replicator.
@@ -118,9 +119,21 @@ kafka-dr-example-timestamp-seek/           # Example with timestamp-based seek o
   src/main/resources/
     application.yml                        # seek-by-timestamp: true
 
-docker-compose.yml                         # 3 Kafka + MirrorMaker 2 + Schema Registry + Redis
+kafka-dr-example-multinode/                # Example with multi-node clusters + deep probe
+  src/main/java/dev/semeshin/kafkadr/
+    MultinodeExampleApp.java               # Entry point
+    handler/
+      EventProcessor.java                  # Simple event handler
+    controller/
+      TestController.java                  # REST API for testing
+  src/main/resources/
+    application.yml                        # deep-probe + min-isr config
+
+docker-compose.yml                         # 3 single-node Kafka + MirrorMaker 2 + Schema Registry + Redis
+docker-compose-multinode.yml               # 2 clusters × 3 nodes + MirrorMaker 2 + Schema Registry + Redis
 mm2/
-  mm2.properties                           # MirrorMaker 2 config (bidirectional replication)
+  mm2.properties                           # MirrorMaker 2 config (single-node clusters)
+  mm2-multinode.properties                 # MirrorMaker 2 config (multi-node clusters)
 ```
 
 ## Quick Start
@@ -231,7 +244,9 @@ docker-compose start kafka-primary                 # auto failback after ~15-20s
 
 The `kafka-dr-example-timestamp-seek` module demonstrates failover with MirrorMaker 2 replication. When primary fails, the consumer on secondary seeks to the offset matching the last processed timestamp — skipping already-handled replicated messages.
 
-**Infrastructure** includes MirrorMaker 2 (`mirror-maker` service) which replicates topics bidirectionally between primary and secondary using `IdentityReplicationPolicy` (preserves original topic names).
+**Infrastructure** includes MirrorMaker 2 (`mirror-maker` service) which replicates topics from the active cluster to standby clusters using `IdentityReplicationPolicy` (preserves original topic names).
+
+> **Important:** Replication must be **one-directional** (active → standby) when using `IdentityReplicationPolicy`. Bidirectional replication with identity policy causes infinite message loops — a message is replicated from A to B, then back from B to A, and so on indefinitely.
 
 ```bash
 # 1. Start all infrastructure including MirrorMaker 2
@@ -656,6 +671,8 @@ DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=171400320000
 | Timestamp-based seek via `ListenerContainerCustomizer` | `TimestampSeekRebalanceListener` uses `offsetsForTimes()` on partition assignment; combined with idempotency for boundary deduplication |
 | `failback-after` time-of-day gate | Blocks all failback (not failover) until specified clock time; once a failover occurs, the app stays on the current cluster until the gate opens regardless of how many higher-priority clusters recover |
 | Deep probe via `describeTopics()` | Read-only check: partition leader count + ISR size; catches "controller alive, brokers dead" and under-replicated partitions without writing test data |
+| One-directional MirrorMaker replication | `IdentityReplicationPolicy` with bidirectional replication causes infinite message loops; active → standby only |
+| Kafka key `byte[]` → `String` conversion | `RECEIVED_KEY` arrives as `byte[]`; `IdempotentConsumer` converts to UTF-8 String for consistent idempotency key comparison |
 
 ## Tech Stack
 
