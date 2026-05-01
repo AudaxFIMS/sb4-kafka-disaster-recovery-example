@@ -444,6 +444,8 @@ This is a read-only metadata check — no test messages are produced.
 | 3 nodes, 2 down | HEALTHY | UNHEALTHY | UNHEALTHY |
 | Leader alive, 1 replica lagging (ISR=1) | HEALTHY | HEALTHY | UNHEALTHY |
 
+> **Important:** `deep-probe-min-nodes` counts **unique leader nodes per topic**. A topic with 1 partition can have at most 1 leader — setting `min-nodes: 2` will always fail for single-partition topics regardless of cluster health. Use `min-nodes: 1` with `min-isr: 2` for single-partition topics. `min-nodes: 2+` is useful when topics have multiple partitions spread across different nodes.
+
 > **Recommended for production.** Without deep probe, a scenario is possible where the cluster controller responds to metadata queries but brokers can't serve data. The basic probe reports "healthy" while all produce/consume operations fail, delaying failover.
 
 ### Failover

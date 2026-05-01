@@ -1,0 +1,168 @@
+services:
+
+  # ============================================================
+  # PRIMARY CLUSTER — 3 nodes (KRaft, shared controller quorum)
+  # ============================================================
+  primary-node-1:
+    image: apache/kafka:3.9.0
+    container_name: primary-node-1
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@primary-node-1:9093,2@primary-node-2:9093,3@primary-node-3:9093
+      KAFKA_LISTENERS: EXTERNAL://:9092,INTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9092,INTERNAL://primary-node-1:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+  primary-node-2:
+    image: apache/kafka:3.9.0
+    container_name: primary-node-2
+    ports:
+      - "9093:9092"
+    environment:
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@primary-node-1:9093,2@primary-node-2:9093,3@primary-node-3:9093
+      KAFKA_LISTENERS: EXTERNAL://:9092,INTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9093,INTERNAL://primary-node-2:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+  primary-node-3:
+    image: apache/kafka:3.9.0
+    container_name: primary-node-3
+    ports:
+      - "9094:9092"
+    environment:
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@primary-node-1:9093,2@primary-node-2:9093,3@primary-node-3:9093
+      KAFKA_LISTENERS: EXTERNAL://:9092,INTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9094,INTERNAL://primary-node-3:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+  # ============================================================
+  # SECONDARY CLUSTER — 3 nodes (KRaft, shared controller quorum)
+  # ============================================================
+  secondary-node-1:
+    image: apache/kafka:3.9.0
+    container_name: secondary-node-1
+    ports:
+      - "9095:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@secondary-node-1:9093,2@secondary-node-2:9093,3@secondary-node-3:9093
+      KAFKA_LISTENERS: EXTERNAL://:9092,INTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9095,INTERNAL://secondary-node-1:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      CLUSTER_ID: NkQ3OEVBNTcwNTJENDM2Rg
+
+  secondary-node-2:
+    image: apache/kafka:3.9.0
+    container_name: secondary-node-2
+    ports:
+      - "9096:9092"
+    environment:
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@secondary-node-1:9093,2@secondary-node-2:9093,3@secondary-node-3:9093
+      KAFKA_LISTENERS: EXTERNAL://:9092,INTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9096,INTERNAL://secondary-node-2:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      CLUSTER_ID: NkQ3OEVBNTcwNTJENDM2Rg
+
+  secondary-node-3:
+    image: apache/kafka:3.9.0
+    container_name: secondary-node-3
+    ports:
+      - "9097:9092"
+    environment:
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@secondary-node-1:9093,2@secondary-node-2:9093,3@secondary-node-3:9093
+      KAFKA_LISTENERS: EXTERNAL://:9092,INTERNAL://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9097,INTERNAL://secondary-node-3:19092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      CLUSTER_ID: NkQ3OEVBNTcwNTJENDM2Rg
+
+  # ============================================================
+  # MirrorMaker 2 — bidirectional replication
+  # ============================================================
+  mirror-maker:
+    image: apache/kafka:3.9.0
+    container_name: mirror-maker-multinode
+    depends_on:
+      - primary-node-1
+      - primary-node-2
+      - primary-node-3
+      - secondary-node-1
+      - secondary-node-2
+      - secondary-node-3
+    volumes:
+      - ./mm2/mm2-multinode.properties:/opt/kafka/config/mm2.properties:ro
+    command: /opt/kafka/bin/connect-mirror-maker.sh /opt/kafka/config/mm2.properties
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+
+  # ============================================================
+  # Schema Registry + Redis
+  # ============================================================
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.9.0
+    container_name: schema-registry-multinode
+    depends_on:
+      - primary-node-1
+      - secondary-node-1
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: primary-node-1:19092,secondary-node-1:19092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-multinode
+    ports:
+      - "6379:6379"

@@ -70,13 +70,19 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
         // If custom header is configured, use it
         if (keyHeader != null && !keyHeader.isBlank()) {
             Object key = msg.getHeaders().get(keyHeader);
-            return key != null ? key.toString() : null;
+            return keyToString(key);
         }
         // Default: Kafka record key (RECEIVED_KEY on consumer side, KEY on producer side)
         Object key = msg.getHeaders().get(KafkaHeaders.RECEIVED_KEY);
         if (key == null) {
             key = msg.getHeaders().get(KafkaHeaders.KEY);
         }
-        return key != null ? key.toString() : null;
+        return keyToString(key);
+    }
+
+    private static String keyToString(Object key) {
+        if (key == null) return null;
+        if (key instanceof byte[] bytes) return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        return key.toString();
     }
 }

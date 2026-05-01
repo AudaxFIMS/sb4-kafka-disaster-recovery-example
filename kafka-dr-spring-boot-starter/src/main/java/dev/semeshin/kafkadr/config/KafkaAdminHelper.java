@@ -57,13 +57,20 @@ public final class KafkaAdminHelper {
 
         if (requiredTopics.isEmpty()) return;
 
-        Map<String, String> kafkaProps = extractKafkaClientProperties(props.getEffectiveEnvironment(cluster));
+        Map<String, String> env = props.getEffectiveEnvironment(cluster);
+        Map<String, String> kafkaProps = extractKafkaClientProperties(env);
+
+        // Get replication factor from binder config, default to broker setting
+        String rfValue = env.get("spring.cloud.stream.kafka.binder.replication-factor");
+        Optional<Short> replicationFactor = (rfValue != null)
+                ? Optional.of(Short.parseShort(rfValue))
+                : Optional.empty();
 
         try (AdminClient admin = createAdminClient(brokers, timeoutMs, kafkaProps)) {
             Set<String> existing = admin.listTopics().names().get(timeoutMs, TimeUnit.MILLISECONDS);
             List<NewTopic> toCreate = requiredTopics.stream()
                     .filter(t -> !existing.contains(t))
-                    .map(t -> new NewTopic(t, Optional.empty(), Optional.empty()))
+                    .map(t -> new NewTopic(t, Optional.empty(), replicationFactor))
                     .toList();
 
             if (!toCreate.isEmpty()) {

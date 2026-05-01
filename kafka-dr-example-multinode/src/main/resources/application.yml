@@ -1,0 +1,70 @@
+kafka-dr:
+  enabled: true
+
+  default-environment:
+    spring.cloud.stream.kafka.binder:
+      auto-create-topics: false
+      replication-factor: 3
+      configuration:
+        reconnect.backoff.ms: 1000
+        reconnect.backoff.max.ms: 10000
+        request.timeout.ms: 5000
+        default.api.timeout.ms: 10000
+        socket.connection.setup.timeout.ms: 3000
+
+  default-producer-properties:
+    sync: true
+    configuration:
+      acks: all
+      max.block.ms: 5000
+      delivery.timeout.ms: 10000
+      request.timeout.ms: 5000
+      key.serializer: org.apache.kafka.common.serialization.StringSerializer
+
+  clusters:
+    primary:
+      bootstrap-servers: ${KAFKA_PRIMARY:localhost:9092}
+      priority: 1
+    secondary:
+      bootstrap-servers: ${KAFKA_SECONDARY:localhost:9095}
+      priority: 2
+
+  consumers:
+    - topic: events
+      group: multinode-group
+      handler: processEvent
+      content-type: string
+
+  producers:
+    - topic: events
+      content-type: string
+
+  auto-create-topics: true
+
+  health-check:
+    interval-ms: 5000
+    timeout-ms: 3000
+    failure-threshold: 3
+    recovery-threshold: 3
+    deep-probe: true
+    deep-probe-min-nodes: 1    # per-topic unique leaders (1 for single-partition topics)
+    deep-probe-min-isr: 2      # in-sync replicas — catches node failures with RF=3
+
+  idempotency:
+    ttl-seconds: 3600
+    key-prefix: multinode-demo
+
+logging:
+  level:
+    org.apache.kafka.clients.admin.AdminClient: WARN
+    org.apache.kafka.clients.admin.AdminClientConfig: WARN
+    org.apache.kafka.clients.admin.internals.AdminMetadataManager: ERROR
+    org.apache.kafka.clients.NetworkClient: ERROR
+    org.apache.kafka.clients.consumer.ConsumerConfig: WARN
+    org.apache.kafka.clients.producer.ProducerConfig: WARN
+    org.apache.kafka.common.utils.AppInfoParser: WARN
+    org.apache.kafka.common.config.AbstractConfig: WARN
+    org.apache.kafka.common.metrics.Metrics: WARN
+    org.apache.kafka.clients.Metadata: ERROR
+    org.apache.kafka.clients.FetchSessionHandler: ERROR
+    org.springframework.kafka.support.LoggingProducerListener: OFF
