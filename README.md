@@ -8,6 +8,7 @@ The project is structured as a multi-module Maven build:
 - **`kafka-dr-example`** — example application with Avro, Redis idempotency, REST API
 - **`kafka-dr-example-timestamp-seek`** — example with timestamp-based seek on failover
 - **`kafka-dr-example-multinode`** — example with multi-node clusters and deep probe health check
+- **`kafka-dr-example-redis-state`** — example with Redis-backed `FailoverStateStore` so `failback-after` survives application restarts
 
 > **Important: Cross-cluster replication is required.**
 > This framework handles failover at the *application level* — switching producers and consumers between clusters. It does **not** replicate data between Kafka clusters. To ensure no messages are lost, configure cross-cluster replication independently using [MirrorMaker 2](https://kafka.apache.org/documentation/#georeplication), Confluent Cluster Linking, or Confluent Replicator.
@@ -48,6 +49,7 @@ The project is structured as a multi-module Maven build:
 - **Consumer binding management** — only the active cluster's consumers are running; others are stopped
 - **Producer cache cleanup** — dead cluster producers are closed to prevent reconnect noise
 - **Idempotent message processing** — pluggable deduplication via `IdempotencyStore` interface (in-memory default, Redis example included)
+- **Restart-safe failback gate** — pluggable `FailoverStateStore` persists which cluster the app is pinned to after a failover plus the failover timestamp; `failback-after` is honored across restarts (in-memory default, Redis example included)
 - **Multi-format support** — String, JSON, Avro, and raw bytes payloads with per-topic configuration
 - **Fully dynamic configuration** — clusters, consumers, and producers are defined in YAML; no code changes needed
 - **Per-topic handler mapping** — business logic methods are mapped to topics via configuration
@@ -83,6 +85,8 @@ kafka-dr-spring-boot-starter/             # Framework (reusable JAR)
       BindingLifecycleManager.java         # Start/stop bindings on cluster switch
       LateBindingInitializer.java          # Creates bindings for recovered clusters
       ClusterSwitchedEvent.java            # Spring event on failover/failback
+      FailoverStateStore.java              # Interface — persist failover state (active cluster + Instant)
+      InMemoryFailoverStateStore.java      # Default fallback (registered as @Bean in auto-config)
     health/
       ClusterHealthChecker.java            # Periodic health probe
     idempotency/
@@ -128,6 +132,20 @@ kafka-dr-example-multinode/                # Example with multi-node clusters + 
       TestController.java                  # REST API for testing
   src/main/resources/
     application.yml                        # deep-probe + min-isr config
+
+kafka-dr-example-redis-state/              # Example: Redis-backed FailoverStateStore
+  src/main/java/dev/semeshin/kafkadr/
+    RedisStateExampleApp.java              # Entry point
+    handler/
+      EventMessageProcessor.java           # Simple string event handler
+    controller/
+      EventController.java                 # REST API + /status exposes persisted state
+    store/
+      RedisFailoverStateStore.java         # FailoverStateStore impl (survives restarts)
+  src/test/java/.../store/
+    RedisFailoverStateStoreTest.java       # Unit tests for the SPI contract
+  src/main/resources/
+    application.yml                        # failback-after: "22:00:00" + Redis config
 
 docker-compose.yml                         # 3 single-node Kafka + MirrorMaker 2 + Schema Registry + Redis
 docker-compose-multinode.yml               # 2 clusters × 3 nodes + MirrorMaker 2 + Schema Registry + Redis
@@ -293,6 +311,40 @@ kafka-dr:
 ```
 
 The app includes `RedisTimestampStore` to persist timestamps across restarts. MirrorMaker 2 config is in `mm2/mm2.properties`.
+
+### Example: Restart-Safe `failback-after` (Redis-backed `FailoverStateStore`)
+
+The `kafka-dr-example-redis-state` module demonstrates the pluggable `FailoverStateStore` SPI. The example pins the app to whatever cluster it failed over to until 22:00 local time **even if the app is restarted in between**.
+
+```bash
+# 1. Start infrastructure (Redis is included in docker-compose.yml)
+docker-compose up -d
+
+# 2. Build starter
+cd kafka-dr-spring-boot-starter && mvn clean install -DskipTests
+
+# 3. Run the example
+cd ../kafka-dr-example-redis-state && mvn clean spring-boot:run
+```
+
+```bash
+# Trigger a failover
+docker-compose stop kafka-primary
+curl -X POST 'localhost:8080/api/messages/events?message=after-failover'
+curl -s localhost:8080/api/messages/status | jq
+# .activeCluster == "secondary"
+# .persistedFailoverState.activeCluster == "secondary"
+# .persistedFailoverState.failoverAt == "<ISO-8601 instant>"
+
+# Restart the app while still before failback-after — secondary is restored
+# Restart the app after failback-after (or next day) — state is cleared, primary is elected
+```
+
+Run the SPI unit tests:
+
+```bash
+cd kafka-dr-example-redis-state && mvn test
+```
 
 ## Configuration
 
@@ -487,6 +539,48 @@ kafka-dr:
 
 > **Note:** `failback-after` blocks **all** failback (return to any higher-priority cluster) while the current cluster is healthy. Failover (leaving an unhealthy cluster) is always immediate regardless of this setting. After a successful failback the gate resets — subsequent failovers will again be held until the configured time.
 
+#### Surviving application restarts (`FailoverStateStore`)
+
+The `failback-after` gate is enforced via a pluggable `FailoverStateStore`. On every cluster switch the manager records the active cluster name and the failover `Instant` to the store; on a successful failback (or whenever a non-failover initial selection happens) it clears the store.
+
+```java
+public interface FailoverStateStore {
+    void save(FailoverState state);
+    Optional<FailoverState> load();
+    void clear();
+    record FailoverState(String activeCluster, Instant failoverAt) {}
+}
+```
+
+On startup `ActiveClusterManager` calls `load()`:
+
+- **No persisted state** → standard initial election (priority order).
+- **Persisted state, but `now` is at or past the next occurrence of `failback-after` after `failoverAt`** → state is cleared and the priority cluster is elected as usual. This is the date-aware part: if the app was down for hours or days, the gate has already expired and the priority cluster wins.
+- **Persisted state, threshold not yet reached** → the persisted cluster is restored as active, `failoverOccurred` is set, and the gate continues to block any failback until the threshold passes — even if a higher-priority cluster reports healthy first.
+
+The runtime gate (`isFailbackBlocked`) uses the same date-aware computation so the live behavior matches what the startup decision saw.
+
+The framework provides `InMemoryFailoverStateStore` as the default `@Bean` (via `@ConditionalOnMissingBean(FailoverStateStore.class)` in `KafkaDrAutoConfiguration`). Restarting the app loses the in-memory state, so `failback-after` is best-effort across restarts unless you provide a durable implementation.
+
+To make the gate restart-safe, register a `@Component implements FailoverStateStore`:
+
+```java
+@Component
+public class MyFailoverStateStore implements FailoverStateStore {
+    public void save(FailoverState state) { /* persist activeCluster + failoverAt */ }
+    public Optional<FailoverState> load() { /* read */ }
+    public void clear() { /* delete */ }
+}
+```
+
+The `kafka-dr-example-redis-state` module includes `RedisFailoverStateStore` as a reference implementation (Redis hash `kafka-dr:failover-state` with `activeCluster` and `failoverAt` fields).
+
+| Scenario | In-memory store (default) | Durable store (e.g. Redis) |
+|---|---|---|
+| Failover at 14:00, restart at 16:00, `failback-after: "22:00"` | App boots on priority cluster (gate lost) | App restores secondary, gate active until 22:00 |
+| Failover at 14:00, restart next day at 09:00 | App boots on priority cluster | Threshold (yesterday 22:00) past → store cleared → priority cluster |
+| Failover at 23:00, restart at 09:00 next day, `failback-after: "22:00"` | App boots on priority cluster | Threshold = next day 22:00 → still blocked → restores secondary |
+
 How it works:
 1. `IdempotentConsumer` tracks the latest `RECEIVED_TIMESTAMP` per topic via `LastProcessedTimestampTracker`
 2. On cluster switch, the new consumer receives partition assignments
@@ -670,6 +764,7 @@ DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=171400320000
 | Topic names converted to camelCase for binding names | Dots in topic names break Spring property binding |
 | Timestamp-based seek via `ListenerContainerCustomizer` | `TimestampSeekRebalanceListener` uses `offsetsForTimes()` on partition assignment; combined with idempotency for boundary deduplication |
 | `failback-after` time-of-day gate | Blocks all failback (not failover) until specified clock time; once a failover occurs, the app stays on the current cluster until the gate opens regardless of how many higher-priority clusters recover |
+| `FailoverStateStore` SPI | Persists active cluster + failover `Instant` so the `failback-after` gate survives application restarts; threshold computation is date-aware (next occurrence of `failback-after` after `failoverAt`) so multi-day downtime correctly releases the gate; in-memory default keeps existing behavior unchanged |
 | Deep probe via `describeTopics()` | Read-only check: partition leader count + ISR size; catches "controller alive, brokers dead" and under-replicated partitions without writing test data |
 | One-directional MirrorMaker replication | `IdentityReplicationPolicy` with bidirectional replication causes infinite message loops; active → standby only |
 | Kafka key `byte[]` → `String` conversion | `RECEIVED_KEY` arrives as `byte[]`; `IdempotentConsumer` converts to UTF-8 String for consistent idempotency key comparison |

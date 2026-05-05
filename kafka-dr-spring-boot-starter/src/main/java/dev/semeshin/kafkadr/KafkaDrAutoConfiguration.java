@@ -4,6 +4,8 @@ import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.consumer.TimestampSeekRebalanceListener;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import dev.semeshin.kafkadr.idempotency.InMemoryIdempotencyStore;
+import dev.semeshin.kafkadr.routing.FailoverStateStore;
+import dev.semeshin.kafkadr.routing.InMemoryFailoverStateStore;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -27,6 +29,12 @@ public class KafkaDrAutoConfiguration {
     @ConditionalOnMissingBean(IdempotencyStore.class)
     public InMemoryIdempotencyStore inMemoryIdempotencyStore() {
         return new InMemoryIdempotencyStore();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(FailoverStateStore.class)
+    public InMemoryFailoverStateStore inMemoryFailoverStateStore() {
+        return new InMemoryFailoverStateStore();
     }
 
     @Bean
