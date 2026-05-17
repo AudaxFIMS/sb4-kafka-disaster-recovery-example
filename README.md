@@ -386,6 +386,107 @@ kafka-dr:
             ssl.truststore.location: /certs/eu-truststore.p12
 ```
 
+Per-cluster binder overrides go under `environment`. Keys mirror `spring.cloud.stream.binders.{name}.environment.*`. Values are merged on top of `kafka-dr.default-environment` (per-cluster wins on conflict).
+
+#### Per-cluster Schema Registry
+
+When using Confluent Schema Registry, each cluster typically has its own registry (or an isolated logical context) so that Avro/Protobuf schemas evolve independently per region. Each binder runs in its own Spring child context, so the `KafkaAvroSerializer` / `KafkaAvroDeserializer` for each cluster resolves its own Schema Registry — there is no shared global registry client. **No code changes are needed**; everything is configured via the per-cluster `environment` map.
+
+Schema Registry client properties use the **`schema.registry.`** prefix, which keeps them isolated from Kafka broker `ssl.*` settings — the two namespaces never collide. The Kafka client passes the full configuration map into the Avro (de)serializer's `configure()` method, and the (de)serializer routes `schema.registry.*` and `basic.auth.*` / `bearer.auth.*` keys to its internal HTTP client.
+
+| Purpose | Property |
+|---|---|
+| URL | `schema.registry.url` |
+| Truststore (TLS) | `schema.registry.ssl.truststore.location` / `.password` / `.type` |
+| Keystore (mTLS) | `schema.registry.ssl.keystore.location` / `.password` / `.type` / `.key.password` |
+| TLS protocol | `schema.registry.ssl.protocol` (e.g. `TLSv1.3`) |
+| Hostname verification | `schema.registry.ssl.endpoint.identification.algorithm` |
+| Basic auth | `basic.auth.credentials.source: USER_INFO` + `basic.auth.user.info: user:pass` |
+| Bearer auth | `bearer.auth.credentials.source` + `bearer.auth.token` |
+
+> Note: Kafka broker SSL uses the unprefixed `ssl.*` keys (`ssl.truststore.location`, etc.). The two namespaces are independent — a cluster can use SSL to the brokers and plain HTTP to its Schema Registry, or vice versa.
+
+**Minimal example — different Schema Registry URL per cluster (no auth, plain HTTP):**
+
+```yaml
+kafka-dr:
+  default-environment:
+    spring.cloud.stream.kafka.binder:
+      configuration:
+        schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8081}   # global fallback
+
+  clusters:
+    primary:
+      bootstrap-servers: ${KAFKA_PRIMARY_BROKERS:localhost:9092}
+      priority: 1
+      environment:
+        spring.cloud.stream.kafka.binder:
+          configuration:
+            schema.registry.url: ${SR_PRIMARY_URL:http://sr-primary:8081}
+    secondary:
+      bootstrap-servers: ${KAFKA_SECONDARY_BROKERS:localhost:9094}
+      priority: 2
+      environment:
+        spring.cloud.stream.kafka.binder:
+          configuration:
+            schema.registry.url: ${SR_SECONDARY_URL:http://sr-secondary:8081}
+    tertiary:
+      bootstrap-servers: ${KAFKA_TERTIARY_BROKERS:localhost:9096}
+      priority: 3
+      environment:
+        spring.cloud.stream.kafka.binder:
+          configuration:
+            schema.registry.url: ${SR_TERTIARY_URL:http://sr-tertiary:8081}
+```
+
+How merging works for, say, `primary`: `getEffectiveEnvironment("primary")` flattens `default-environment` first (registers `schema.registry.url = http://localhost:8081`), then layers `clusters.primary.environment` on top (replaces it with `http://sr-primary:8081`). The resulting key lands under `spring.cloud.stream.binders.primary.environment.…schema.registry.url`, so the `primary` binder's Avro (de)serializer talks to `sr-primary:8081` while `secondary` and `tertiary` talk to theirs.
+
+If a cluster's registry happens to match the default, omit its `environment` block entirely — the fallback in `default-environment` applies.
+
+**Production example — independent Schema Registry security per cluster:**
+
+```yaml
+kafka-dr:
+  default-environment:
+    spring.cloud.stream.kafka.binder:
+      configuration:
+        schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8081}   # fallback
+
+  clusters:
+    us-east:
+      bootstrap-servers: kafka-us-east:9093
+      environment:
+        spring.cloud.stream.kafka.binder:
+          configuration:
+            # Kafka broker SSL
+            security.protocol: SSL
+            ssl.truststore.location: /certs/kafka-us-east-truststore.p12
+            ssl.truststore.password: ${KAFKA_US_EAST_TS_PASS}
+            ssl.keystore.location: /certs/kafka-us-east-keystore.p12
+            ssl.keystore.password: ${KAFKA_US_EAST_KS_PASS}
+            # Schema Registry — URL + mTLS
+            schema.registry.url: https://sr-us-east:8081
+            schema.registry.ssl.truststore.location: /certs/sr-us-east-truststore.p12
+            schema.registry.ssl.truststore.password: ${SR_US_EAST_TS_PASS}
+            schema.registry.ssl.keystore.location: /certs/sr-us-east-keystore.p12
+            schema.registry.ssl.keystore.password: ${SR_US_EAST_KS_PASS}
+
+    eu-west:
+      bootstrap-servers: kafka-eu-west:9093
+      environment:
+        spring.cloud.stream.kafka.binder:
+          configuration:
+            security.protocol: SSL
+            ssl.truststore.location: /certs/kafka-eu-west-truststore.p12
+            ssl.truststore.password: ${KAFKA_EU_WEST_TS_PASS}
+            # Schema Registry — URL + basic auth instead of mTLS
+            schema.registry.url: https://sr-eu-west:8081
+            schema.registry.ssl.truststore.location: /certs/sr-eu-west-truststore.p12
+            schema.registry.ssl.truststore.password: ${SR_EU_WEST_TS_PASS}
+            basic.auth.credentials.source: USER_INFO
+            basic.auth.user.info: ${SR_EU_WEST_USER}:${SR_EU_WEST_PASS}
+```
+
 ### Default Binder Environment
 
 Applied to all clusters. Per-cluster `environment` overrides these defaults:
