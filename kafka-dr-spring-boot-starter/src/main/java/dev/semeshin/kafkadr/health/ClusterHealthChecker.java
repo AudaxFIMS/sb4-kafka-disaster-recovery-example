@@ -1,5 +1,6 @@
 package dev.semeshin.kafkadr.health;
 
+import dev.semeshin.kafkadr.config.AdminClientFactory;
 import dev.semeshin.kafkadr.config.KafkaAdminHelper;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.ClusterConfig;
@@ -29,11 +30,14 @@ public class ClusterHealthChecker implements HealthIndicator {
 
     private final KafkaClusterProperties properties;
     private final ActiveClusterManager clusterManager;
+    private final AdminClientFactory adminClientFactory;
 
     public ClusterHealthChecker(KafkaClusterProperties properties,
-                                ActiveClusterManager clusterManager) {
+                                ActiveClusterManager clusterManager,
+                                AdminClientFactory adminClientFactory) {
         this.properties = properties;
         this.clusterManager = clusterManager;
+        this.adminClientFactory = adminClientFactory;
     }
 
     @Scheduled(fixedDelayString = "${kafka-dr.health-check.interval-ms:5000}")
@@ -64,7 +68,7 @@ public class ClusterHealthChecker implements HealthIndicator {
      * Misses: broker alive but not accepting data (no partition leaders).
      */
     private boolean probeAdmin(String brokers, long timeoutMs, Map<String, String> kafkaClientProps) {
-        try (AdminClient admin = KafkaAdminHelper.createAdminClient(brokers, (int) timeoutMs, kafkaClientProps)) {
+        try (AdminClient admin = adminClientFactory.create(brokers, (int) timeoutMs, kafkaClientProps)) {
             admin.describeCluster()
                     .clusterId()
                     .get(timeoutMs, TimeUnit.MILLISECONDS);
@@ -83,7 +87,7 @@ public class ClusterHealthChecker implements HealthIndicator {
      */
     private boolean probeDeep(String clusterName, String brokers, long timeoutMs,
                               Map<String, String> kafkaClientProps) {
-        try (AdminClient admin = KafkaAdminHelper.createAdminClient(brokers, (int) timeoutMs, kafkaClientProps)) {
+        try (AdminClient admin = adminClientFactory.create(brokers, (int) timeoutMs, kafkaClientProps)) {
             // Step 1: cluster must be reachable
             admin.describeCluster()
                     .clusterId()
