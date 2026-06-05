@@ -42,17 +42,20 @@ kafka-dr:
       priority: 3
 
   consumers:
-    - topic: demo-events
+    demo-events-consumer:
+      topic: demo-events
       group: dr-demo-group
       handler: processDemoEvent
       content-type: string
 
-    - topic: order-events
+    order-events-consumer:
+      topic: order-events
       group: dr-demo-group
       handler: processOrder
       content-type: json
 
-    - topic: payment-events
+    payment-events-consumer:
+      topic: payment-events
       group: dr-demo-group
       handler: processPayment
       content-type: native
@@ -61,25 +64,30 @@ kafka-dr:
           value.deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
           specific.avro.reader: "true"
 
-    - topic: raw-telemetry
+    raw-telemetry-consumer:
+      topic: raw-telemetry
       group: dr-demo-group
       handler: processRawData
       content-type: bytes
 
   producers:
-    - topic: demo-events
+    demo-events-producer:
+      topic: demo-events
       content-type: string
 
-    - topic: order-events
+    order-events-producer:
+      topic: order-events
       content-type: json
 
-    - topic: payment-events
+    payment-events-producer:
+      topic: payment-events
       content-type: native
       properties:
         configuration:
           value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
 
-    - topic: raw-telemetry
+    raw-telemetry-producer:
+      topic: raw-telemetry
       content-type: bytes
 
   health-check:

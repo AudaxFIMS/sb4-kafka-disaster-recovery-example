@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 
+import java.nio.charset.StandardCharsets;
 import java.util.function.Consumer;
 
 /**
@@ -82,7 +83,7 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
 
     private static String keyToString(Object key) {
         if (key == null) return null;
-        if (key instanceof byte[] bytes) return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        if (key instanceof byte[] bytes) return new String(bytes, StandardCharsets.UTF_8);
         return key.toString();
     }
 }

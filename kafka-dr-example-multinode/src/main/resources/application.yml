@@ -30,13 +30,15 @@ kafka-dr:
       priority: 2
 
   consumers:
-    - topic: events
+    events-consumer:
+      topic: events
       group: multinode-group
       handler: processEvent
       content-type: string
 
   producers:
-    - topic: events
+    events-producer:
+      topic: events
       content-type: string
 
   auto-create-topics: true

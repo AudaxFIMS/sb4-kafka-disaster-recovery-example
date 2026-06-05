@@ -1,5 +1,40 @@
 # Kafka Multi-Cluster Disaster Recovery with Spring Cloud Stream
 
+> ## ⚠️ BREAKING CHANGE — consumers/producers config format changed
+>
+> **The list-based form is no longer supported.** All `kafka-dr.consumers` and `kafka-dr.producers` entries must now be defined as a **map keyed by a logical name**.
+>
+> ```yaml
+> # ❌ OLD — NO LONGER WORKS
+> kafka-dr:
+>   consumers:
+>     - topic: orders
+>       handler: processOrder
+>   producers:
+>     - topic: orders
+>
+> # ✅ NEW — REQUIRED
+> kafka-dr:
+>   consumers:
+>     orders-consumer:        # logical name (you choose)
+>       topic: orders
+>       handler: processOrder
+>   producers:
+>     orders-producer:
+>       topic: orders
+> ```
+>
+> **Why:** the old list form required `kafka-dr.consumers[0].topic=...` keys when flattened, which break in Kubernetes ConfigMaps, AWS SSM Parameter Store, Vault, and any config source where `[`/`]` are not allowed in keys. The new map form is fully flat and works everywhere.
+>
+> **Side effects:**
+> - Generated Spring Cloud Function bean names change: `ordersPrimary` → `ordersConsumerPrimary` (derived from the new logical name). If you override `spring.cloud.stream.bindings.<bindingName>.*` properties anywhere, update them.
+> - `IdempotentConsumer` now scopes idempotency by consumer name (not topic) — multiple consumers on the same topic each have independent dedup state.
+> - Each topic must have exactly one producer entry; duplicates fail-fast at startup.
+>
+> See [Consumers](#consumers) and [Producers](#producers) for the full migration guide.
+
+---
+
 A production-ready **Spring Boot starter** for **active-passive disaster recovery** across N Kafka clusters. The framework automatically detects cluster failures, switches producers and consumers to the next healthy cluster, and fails back when the original cluster recovers.
 
 The project is structured as a multi-module Maven build:
@@ -215,12 +250,14 @@ kafka-dr:
       bootstrap-servers: kafka-2:9092
       priority: 2
   consumers:
-    - topic: orders
+    orders-consumer:
+      topic: orders
       group: my-group
       handler: handleOrder
       content-type: json
   producers:
-    - topic: orders
+    orders-producer:
+      topic: orders
       content-type: json
 ```
 
@@ -537,7 +574,8 @@ Per-topic `properties` are merged on top. Kafka client properties go under `conf
 ```yaml
 kafka-dr:
   consumers:
-    - topic: order-events
+    orders-consumer:                 # Logical consumer name (user-chosen key)
+      topic: order-events
       group: my-group
       handler: processOrder          # Method name in any MessageProcessor bean
       content-type: json             # json | string | bytes | native
@@ -546,7 +584,37 @@ kafka-dr:
           value.deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
 ```
 
-Topic names with dots (e.g. `ax123.test.event`) are fully supported — binding names are auto-converted to camelCase internally.
+Consumers are configured as a map keyed by an arbitrary logical name. The key is used for:
+
+- Function bean naming (`ordersConsumerPrimary`, etc.)
+- Spring Cloud Stream binding naming (`ordersConsumerPrimary-in-0`)
+- Idempotency scoping (`{consumerName}:{messageId}`)
+- Per-consumer timestamp tracking for seek-by-timestamp
+
+This map form is also the format that works on Kubernetes / EKS without `[]` indexes:
+
+```properties
+kafka-dr.consumers.orders-consumer.topic=order-events
+kafka-dr.consumers.orders-consumer.handler=processOrder
+kafka-dr.consumers.orders-consumer.group=my-group
+```
+
+Topic names with dots (e.g. `ax123.test.event`) are fully supported — the logical consumer name (Map key) is independent of the topic, so dotted topic names don't pollute binding keys.
+
+Multiple consumers may target the same topic (different groups / handlers) — use distinct map keys:
+
+```yaml
+kafka-dr:
+  consumers:
+    orders-main:
+      topic: orders
+      group: order-processor
+      handler: processOrder
+    orders-audit:
+      topic: orders
+      group: order-auditor
+      handler: auditOrder
+```
 
 | Content type | Conversion | Use case |
 |---|---|---|
@@ -560,14 +628,18 @@ Topic names with dots (e.g. `ax123.test.event`) are fully supported — binding 
 ```yaml
 kafka-dr:
   producers:
-    - topic: order-events
+    order-events-producer:           # Logical producer name (user-chosen key)
+      topic: order-events
       content-type: json
-    - topic: payment-events
+    payment-events-producer:
+      topic: payment-events
       content-type: native
       properties:
         configuration:
           value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
 ```
+
+Producers are also a map keyed by logical name. `ResilientProducer.send(topic, ...)` resolves the topic to the corresponding producer entry; each topic must have exactly one producer configured.
 
 ### Topic Provisioning
 

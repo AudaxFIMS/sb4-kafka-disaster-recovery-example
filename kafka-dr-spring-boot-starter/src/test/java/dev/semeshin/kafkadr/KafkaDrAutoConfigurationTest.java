@@ -17,9 +17,12 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class KafkaDrAutoConfigurationTest {
 
@@ -75,9 +78,9 @@ class KafkaDrAutoConfigurationTest {
         ListenerContainerCustomizer<AbstractMessageListenerContainer<?, ?>> customizer =
                 cfg.timestampSeekCustomizer(tracker);
 
-        AbstractMessageListenerContainer<?, ?> container = org.mockito.Mockito.mock(AbstractMessageListenerContainer.class);
+        AbstractMessageListenerContainer<?, ?> container = mock(AbstractMessageListenerContainer.class);
         ContainerProperties props = new ContainerProperties("topic");
-        org.mockito.Mockito.when(container.getContainerProperties()).thenReturn(props);
+        when(container.getContainerProperties()).thenReturn(props);
 
         customizer.configure(container, "topic", "group");
 
@@ -85,8 +88,8 @@ class KafkaDrAutoConfigurationTest {
                 .isInstanceOf(ConsumerAwareRebalanceListener.class);
 
         @SuppressWarnings("unchecked")
-        Consumer<Object, Object> consumer = org.mockito.Mockito.mock(Consumer.class);
+        Consumer<Object, Object> consumer = mock(Consumer.class);
         ((ConsumerAwareRebalanceListener) props.getConsumerRebalanceListener())
-                .onPartitionsAssigned(consumer, java.util.List.<TopicPartition>of());
+                .onPartitionsAssigned(consumer, List.<TopicPartition>of());
     }
 }

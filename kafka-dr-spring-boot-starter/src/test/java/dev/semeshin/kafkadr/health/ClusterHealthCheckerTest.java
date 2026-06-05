@@ -19,6 +19,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.Status;
 
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -203,7 +204,7 @@ class ClusterHealthCheckerTest {
         KafkaClusterProperties.ConsumerConfig c = new KafkaClusterProperties.ConsumerConfig();
         c.setTopic(topic);
         c.setHandler("h");
-        props.setConsumers(List.of(c));
+        props.setConsumers(Map.of(topic + "-consumer", c));
     }
 
     private void stubDescribeCluster(String cid) {
@@ -220,7 +221,7 @@ class ClusterHealthCheckerTest {
 
     private void stubDescribeTopic(String topic, TopicPartitionInfo partition) {
         DescribeTopicsResult result = mock(DescribeTopicsResult.class);
-        when(adminClient.describeTopics(any(java.util.Collection.class))).thenReturn(result);
+        when(adminClient.describeTopics(any(Collection.class))).thenReturn(result);
         TopicDescription desc = new TopicDescription(topic, false, List.of(partition));
         when(result.allTopicNames()).thenReturn(KafkaFuture.completedFuture(Map.of(topic, desc)));
     }

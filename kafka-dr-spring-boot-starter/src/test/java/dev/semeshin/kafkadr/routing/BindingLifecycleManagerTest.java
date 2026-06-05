@@ -10,12 +10,13 @@ import org.springframework.cloud.stream.binding.BindingsLifecycleController;
 import org.springframework.cloud.stream.binding.BindingsLifecycleController.State;
 import org.springframework.cloud.stream.function.StreamBridge;
 
+import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -63,7 +64,7 @@ class BindingLifecycleManagerTest {
         manager.onClusterSwitched(new ClusterSwitchedEvent(this, "primary", "secondary"));
 
         verify(lateInit).startBindings("secondary");
-        verify(bindingsController, never()).changeState(anyString(), org.mockito.ArgumentMatchers.any());
+        verify(bindingsController, never()).changeState(anyString(), any());
     }
 
     @Test
@@ -164,7 +165,7 @@ class BindingLifecycleManagerTest {
 
     private static StreamBridge realStreamBridgeWithCache(Map<String, Object> cache) throws Exception {
         StreamBridge bridge = mock(StreamBridge.class);
-        java.lang.reflect.Field f = StreamBridge.class.getDeclaredField("channelCache");
+        Field f = StreamBridge.class.getDeclaredField("channelCache");
         f.setAccessible(true);
         f.set(bridge, cache);
         return bridge;
@@ -185,7 +186,7 @@ class BindingLifecycleManagerTest {
         consumer.setTopic("orders");
         consumer.setGroup("dr-group");
         consumer.setHandler("processOrder");
-        props.setConsumers(List.of(consumer));
+        props.setConsumers(Map.of("orders", consumer));
         return props;
     }
 }

@@ -1,20 +1,30 @@
 package dev.semeshin.kafkadr.config;
 
+import dev.semeshin.kafkadr.consumer.IdempotentConsumer;
+import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
+import dev.semeshin.kafkadr.consumer.MessageHandlerRegistry;
+import dev.semeshin.kafkadr.idempotency.InMemoryIdempotencyStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
+import org.springframework.beans.factory.support.GenericBeanDefinition;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.StandardEnvironment;
+import org.springframework.messaging.Message;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.when;
 
 class DynamicBindingRegistrarTest {
 
@@ -25,7 +35,6 @@ class DynamicBindingRegistrarTest {
     @BeforeEach
     void setup() {
         registry = new DefaultListableBeanFactory();
-        registerStubBeans();
         environment = new StandardEnvironment();
         staticHelper = mockStatic(KafkaAdminHelper.class);
     }
@@ -92,8 +101,8 @@ class DynamicBindingRegistrarTest {
     @Test
     void functionDefinitionIncludesOnlyReachableClusters() {
         loadProperties(twoClustersWithConsumer());
-        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eqArg("primary"), any())).thenReturn(true);
-        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eqArg("secondary"), any())).thenReturn(false);
+        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("primary"), any())).thenReturn(true);
+        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("secondary"), any())).thenReturn(false);
 
         registrar().postProcessBeanDefinitionRegistry(registry);
 
@@ -104,8 +113,8 @@ class DynamicBindingRegistrarTest {
     @Test
     void registersFunctionBeansForAllClustersIncludingUnreachable() {
         loadProperties(twoClustersWithConsumer());
-        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eqArg("primary"), any())).thenReturn(true);
-        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eqArg("secondary"), any())).thenReturn(false);
+        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("primary"), any())).thenReturn(true);
+        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("secondary"), any())).thenReturn(false);
 
         registrar().postProcessBeanDefinitionRegistry(registry);
 
@@ -116,8 +125,8 @@ class DynamicBindingRegistrarTest {
     @Test
     void producerBindingsAreGeneratedForBothBaseAndOutZero() {
         Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
-        props.put("kafka-dr.producers[0].topic", "events");
-        props.put("kafka-dr.producers[0].content-type", "json");
+        props.put("kafka-dr.producers.events.topic", "events");
+        props.put("kafka-dr.producers.events.content-type", "json");
         loadProperties(props);
         allClustersReachable();
 
@@ -151,10 +160,9 @@ class DynamicBindingRegistrarTest {
 
     @Test
     void removesSpringBootKafkaAdminBeanWhenPresent() {
-        registry.registerBeanDefinition("kafkaAdmin",
-                new org.springframework.beans.factory.support.GenericBeanDefinition() {{
-                    setBeanClassName("org.springframework.kafka.core.KafkaAdmin");
-                }});
+        GenericBeanDefinition kafkaAdmin = new GenericBeanDefinition();
+        kafkaAdmin.setBeanClassName("org.springframework.kafka.core.KafkaAdmin");
+        registry.registerBeanDefinition("kafkaAdmin", kafkaAdmin);
         loadProperties(twoClustersWithConsumer());
         allClustersReachable();
 
@@ -166,7 +174,7 @@ class DynamicBindingRegistrarTest {
     @Test
     void consumerConfigurationPropertiesArePassedToBinding() {
         Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
-        props.put("kafka-dr.consumers[0].properties.configuration.value.deserializer",
+        props.put("kafka-dr.consumers.orders.properties.configuration.value.deserializer",
                 "io.confluent.kafka.serializers.KafkaAvroDeserializer");
         loadProperties(props);
         allClustersReachable();
@@ -181,8 +189,8 @@ class DynamicBindingRegistrarTest {
     @Test
     void producerConfigurationPropertiesArePassedToBinding() {
         Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
-        props.put("kafka-dr.producers[0].topic", "events");
-        props.put("kafka-dr.producers[0].properties.configuration.acks", "1");
+        props.put("kafka-dr.producers.events.topic", "events");
+        props.put("kafka-dr.producers.events.properties.configuration.acks", "1");
         loadProperties(props);
         allClustersReachable();
 
@@ -204,14 +212,14 @@ class DynamicBindingRegistrarTest {
 
         registrar().postProcessBeanDefinitionRegistry(registry);
 
-        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eqArg("primary"), eqArg("kafka-primary:9092"), any()));
-        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eqArg("secondary"), eqArg("kafka-secondary:9092"), any()));
+        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eq("primary"), eq("kafka-primary:9092"), any()));
+        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eq("secondary"), eq("kafka-secondary:9092"), any()));
     }
 
     @Test
     void nativeConsumerContentTypeEnablesNativeDecoding() {
         Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
-        props.put("kafka-dr.consumers[0].content-type", "native");
+        props.put("kafka-dr.consumers.orders.content-type", "native");
         loadProperties(props);
         allClustersReachable();
 
@@ -225,8 +233,8 @@ class DynamicBindingRegistrarTest {
     @Test
     void nativeProducerContentTypeEnablesNativeEncoding() {
         Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
-        props.put("kafka-dr.producers[0].topic", "events");
-        props.put("kafka-dr.producers[0].content-type", "native");
+        props.put("kafka-dr.producers.events.topic", "events");
+        props.put("kafka-dr.producers.events.content-type", "native");
         loadProperties(props);
         allClustersReachable();
 
@@ -246,34 +254,29 @@ class DynamicBindingRegistrarTest {
         loadProperties(twoClustersWithConsumer());
         allClustersReachable();
 
-        dev.semeshin.kafkadr.idempotency.InMemoryIdempotencyStore store =
-                new dev.semeshin.kafkadr.idempotency.InMemoryIdempotencyStore();
+        InMemoryIdempotencyStore store = new InMemoryIdempotencyStore();
         registry.registerSingleton("idempotencyStore", store);
 
-        dev.semeshin.kafkadr.consumer.MessageHandlerRegistry handlerRegistry =
-                org.mockito.Mockito.mock(dev.semeshin.kafkadr.consumer.MessageHandlerRegistry.class);
-        java.util.function.Consumer<org.springframework.messaging.Message<?>> stubHandler = msg -> {};
-        org.mockito.Mockito.when(handlerRegistry.getHandler(org.mockito.ArgumentMatchers.anyString()))
-                .thenReturn(stubHandler);
+        MessageHandlerRegistry handlerRegistry = mock(MessageHandlerRegistry.class);
+        Consumer<Message<?>> stubHandler = msg -> {};
+        when(handlerRegistry.getHandler(anyString())).thenReturn(stubHandler);
         registry.registerSingleton("messageHandlerRegistry", handlerRegistry);
 
-        dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker tracker =
-                new dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker(null);
+        LastProcessedTimestampTracker tracker = new LastProcessedTimestampTracker(null);
         registry.registerSingleton("lastProcessedTimestampTracker", tracker);
 
         registrar().postProcessBeanDefinitionRegistry(registry);
 
-        java.util.function.Consumer<org.springframework.messaging.Message<?>> bean =
-                registry.getBean("ordersPrimary", java.util.function.Consumer.class);
+        Consumer<Message<?>> bean = registry.getBean("ordersPrimary", Consumer.class);
 
-        assertThat(bean).isInstanceOf(dev.semeshin.kafkadr.consumer.IdempotentConsumer.class);
+        assertThat(bean).isInstanceOf(IdempotentConsumer.class);
     }
 
     @Test
     void initializedClustersPropertyListsReachableOnes() {
         loadProperties(twoClustersWithConsumer());
-        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eqArg("primary"), any())).thenReturn(true);
-        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eqArg("secondary"), any())).thenReturn(false);
+        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("primary"), any())).thenReturn(true);
+        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("secondary"), any())).thenReturn(false);
 
         registrar().postProcessBeanDefinitionRegistry(registry);
 
@@ -296,10 +299,6 @@ class DynamicBindingRegistrarTest {
         staticHelper.when(() -> KafkaAdminHelper.probeCluster(anyString(), any())).thenReturn(true);
     }
 
-    private static String eqArg(String s) {
-        return org.mockito.ArgumentMatchers.eq(s);
-    }
-
     private static Map<String, String> twoClustersWithConsumer() {
         Map<String, String> props = new HashMap<>();
         props.put("kafka-dr.enabled", "true");
@@ -307,14 +306,10 @@ class DynamicBindingRegistrarTest {
         props.put("kafka-dr.clusters.primary.priority", "1");
         props.put("kafka-dr.clusters.secondary.bootstrap-servers", "kafka-secondary:9092");
         props.put("kafka-dr.clusters.secondary.priority", "2");
-        props.put("kafka-dr.consumers[0].topic", "orders");
-        props.put("kafka-dr.consumers[0].handler", "processOrder");
-        props.put("kafka-dr.consumers[0].group", "dr-group");
+        props.put("kafka-dr.consumers.orders.topic", "orders");
+        props.put("kafka-dr.consumers.orders.handler", "processOrder");
+        props.put("kafka-dr.consumers.orders.group", "dr-group");
         return props;
     }
 
-    private void registerStubBeans() {
-        // IdempotentConsumer instance supplier looks up these beans on first use,
-        // not during registration. Tests don't invoke the consumers, so no stubs needed.
-    }
 }

@@ -36,13 +36,13 @@ public class MessageHandlerRegistry {
                                   KafkaClusterProperties properties) {
         this.objectMapper = new ObjectMapper();
 
-        for (ConsumerConfig consumer : properties.getConsumers()) {
-            String topic = consumer.getTopic();
+        for (ConsumerConfig consumer : properties.getConsumers().values()) {
+            String consumerName = consumer.getName();
             String handlerName = consumer.getHandler();
 
             if (handlerName == null || handlerName.isBlank()) {
-                log.info("No handler configured for topic '{}', using default", topic);
-                handlers.put(topic, defaultHandler);
+                log.info("No handler configured for consumer '{}', using default", consumerName);
+                handlers.put(consumerName, defaultHandler);
                 continue;
             }
 
@@ -50,16 +50,16 @@ public class MessageHandlerRegistry {
             Class<?> payloadType = extractPayloadType(ref.method());
             String contentType = consumer.getContentType();
 
-            handlers.put(topic, msg -> {
+            handlers.put(consumerName, msg -> {
                 try {
                     Message<?> converted = convertPayload(msg, payloadType, contentType);
                     ref.method().invoke(ref.bean(), converted);
                 } catch (Exception e) {
-                    log.error("[{}] Handler '{}' failed: {}", topic, handlerName, e.getMessage(), e);
+                    log.error("[{}] Handler '{}' failed: {}", consumerName, handlerName, e.getMessage(), e);
                 }
             });
-            log.info("Mapped topic '{}' -> {}.{}(Message<{}>) [content-type={}]",
-                    topic, ref.bean().getClass().getSimpleName(), handlerName,
+            log.info("Mapped consumer '{}' (topic={}) -> {}.{}(Message<{}>) [content-type={}]",
+                    consumerName, consumer.getTopic(), ref.bean().getClass().getSimpleName(), handlerName,
                     payloadType.getSimpleName(), contentType);
         }
     }
@@ -169,7 +169,10 @@ public class MessageHandlerRegistry {
                         .formatted(methodName, beanNames));
     }
 
-    public Consumer<Message<?>> getHandler(String topic) {
-        return handlers.getOrDefault(topic, defaultHandler);
+    /**
+     * @param consumerName the logical consumer name (from kafka-dr.consumers map key)
+     */
+    public Consumer<Message<?>> getHandler(String consumerName) {
+        return handlers.getOrDefault(consumerName, defaultHandler);
     }
 }

@@ -37,6 +37,10 @@ class ResilientProducerTest {
         properties = new KafkaClusterProperties();
         properties.getHealthCheck().setFailureThreshold(2);
 
+        KafkaClusterProperties.ProducerConfig orderProducer = new KafkaClusterProperties.ProducerConfig();
+        orderProducer.setTopic("order-events");
+        properties.setProducers(Map.of("order-events-producer", orderProducer));
+
         when(clusterManager.getClustersByPriority()).thenReturn(List.of("primary", "secondary"));
     }
 

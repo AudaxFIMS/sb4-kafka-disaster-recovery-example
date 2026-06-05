@@ -5,7 +5,6 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 @ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
@@ -14,8 +13,8 @@ import java.util.Map;
 public class KafkaClusterProperties {
 
     private Map<String, ClusterConfig> clusters = new LinkedHashMap<>();
-    private List<ConsumerConfig> consumers = List.of();
-    private List<ProducerConfig> producers = List.of();
+    private Map<String, ConsumerConfig> consumers = new LinkedHashMap<>();
+    private Map<String, ProducerConfig> producers = new LinkedHashMap<>();
     private Map<String, Object> defaultEnvironment = new LinkedHashMap<>();
     private Map<String, Object> defaultConsumerProperties = new LinkedHashMap<>();
     private Map<String, Object> defaultProducerProperties = new LinkedHashMap<>();
@@ -26,10 +25,33 @@ public class KafkaClusterProperties {
 
     public Map<String, ClusterConfig> getClusters() { return clusters; }
     public void setClusters(Map<String, ClusterConfig> clusters) { this.clusters = clusters; }
-    public List<ConsumerConfig> getConsumers() { return consumers; }
-    public void setConsumers(List<ConsumerConfig> consumers) { this.consumers = consumers; }
-    public List<ProducerConfig> getProducers() { return producers; }
-    public void setProducers(List<ProducerConfig> producers) { this.producers = producers; }
+
+    /**
+     * Returns the consumer map with each entry's {@code name} populated from its map key.
+     * The map key acts as the logical consumer identifier — used for bean naming,
+     * binding naming, idempotency scoping, and timestamp tracking.
+     */
+    public Map<String, ConsumerConfig> getConsumers() {
+        consumers.forEach((name, cfg) -> {
+            if (cfg.getName() == null) cfg.setName(name);
+        });
+        return consumers;
+    }
+
+    public void setConsumers(Map<String, ConsumerConfig> consumers) { this.consumers = consumers; }
+
+    /**
+     * Returns the producer map with each entry's {@code name} populated from its map key.
+     */
+    public Map<String, ProducerConfig> getProducers() {
+        producers.forEach((name, cfg) -> {
+            if (cfg.getName() == null) cfg.setName(name);
+        });
+        return producers;
+    }
+
+    public void setProducers(Map<String, ProducerConfig> producers) { this.producers = producers; }
+
     public Map<String, Object> getDefaultEnvironment() { return defaultEnvironment; }
     public void setDefaultEnvironment(Map<String, Object> defaultEnvironment) { this.defaultEnvironment = defaultEnvironment; }
     public Map<String, Object> getDefaultConsumerProperties() { return defaultConsumerProperties; }
@@ -65,6 +87,12 @@ public class KafkaClusterProperties {
     }
 
     public static class ConsumerConfig {
+        /**
+         * Populated from the consumer map key. Used as logical identifier for
+         * bean naming, idempotency scoping, and timestamp tracking.
+         */
+        private String name;
+
         private String topic;
         private String group = "dr-default-group";
         private String handler;
@@ -88,6 +116,8 @@ public class KafkaClusterProperties {
          */
         private Map<String, Object> properties = new LinkedHashMap<>();
 
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
         public String getTopic() { return topic; }
         public void setTopic(String topic) { this.topic = topic; }
         public String getGroup() { return group; }
@@ -105,6 +135,11 @@ public class KafkaClusterProperties {
      * Output binding properties are generated for each producer x cluster pair.
      */
     public static class ProducerConfig {
+        /**
+         * Populated from the producer map key. Used as logical identifier for binding naming.
+         */
+        private String name;
+
         private String topic;
 
         /**
@@ -124,6 +159,8 @@ public class KafkaClusterProperties {
          */
         private Map<String, Object> properties = new LinkedHashMap<>();
 
+        public String getName() { return name; }
+        public void setName(String name) { this.name = name; }
         public String getTopic() { return topic; }
         public void setTopic(String topic) { this.topic = topic; }
         public String getContentType() { return contentType; }
@@ -264,21 +301,28 @@ public class KafkaClusterProperties {
 
     // --- Naming utilities ---
 
-    public static String functionName(String topic, String cluster) {
-        return toCamelCase(topic) + capitalize(cluster);
-    }
-
-    public static String bindingName(String topic, String cluster) {
-        return functionName(topic, cluster) + "-in-0";
+    /**
+     * Spring Cloud Function bean name for a (consumer name, cluster) pair.
+     * Input is the logical consumer name (Map key), not the topic.
+     */
+    public static String functionName(String consumerName, String cluster) {
+        return toCamelCase(consumerName) + capitalize(cluster);
     }
 
     /**
-     * Returns a safe output binding name for a producer topic.
-     * Topics with dots (e.g. "ax123.test.event") can't be used directly as Spring property keys,
-     * so we convert to camelCase (e.g. "ax123TestEvent") for the binding name.
+     * Input binding name for a (consumer name, cluster) pair.
      */
-    public static String producerBindingName(String topic) {
-        return toCamelCase(topic);
+    public static String bindingName(String consumerName, String cluster) {
+        return functionName(consumerName, cluster) + "-in-0";
+    }
+
+    /**
+     * Output binding name for a producer.
+     * Input is the logical producer name (Map key), not the topic, so dotted topic names
+     * (e.g. "ax123.test.event") don't pollute binding keys.
+     */
+    public static String producerBindingName(String producerName) {
+        return toCamelCase(producerName);
     }
 
     private static String toCamelCase(String name) {

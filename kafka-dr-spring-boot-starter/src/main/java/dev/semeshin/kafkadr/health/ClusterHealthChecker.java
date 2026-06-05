@@ -150,8 +150,8 @@ public class ClusterHealthChecker implements HealthIndicator {
 
     private Set<String> getConfiguredTopics() {
         return Stream.concat(
-                properties.getConsumers().stream().map(KafkaClusterProperties.ConsumerConfig::getTopic),
-                properties.getProducers().stream().map(KafkaClusterProperties.ProducerConfig::getTopic)
+                properties.getConsumers().values().stream().map(KafkaClusterProperties.ConsumerConfig::getTopic),
+                properties.getProducers().values().stream().map(KafkaClusterProperties.ProducerConfig::getTopic)
         ).collect(Collectors.toSet());
     }
 

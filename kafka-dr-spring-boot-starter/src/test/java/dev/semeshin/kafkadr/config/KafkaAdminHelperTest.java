@@ -18,7 +18,6 @@ import org.mockito.MockedStatic;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeoutException;
@@ -229,16 +228,16 @@ class KafkaAdminHelperTest {
     private static void addConsumer(KafkaClusterProperties props, String topic) {
         ConsumerConfig c = new ConsumerConfig();
         c.setTopic(topic);
-        List<ConsumerConfig> existing = new java.util.ArrayList<>(props.getConsumers());
-        existing.add(c);
+        Map<String, ConsumerConfig> existing = new LinkedHashMap<>(props.getConsumers());
+        existing.put(topic + "-consumer", c);
         props.setConsumers(existing);
     }
 
     private static void addProducer(KafkaClusterProperties props, String topic) {
         ProducerConfig p = new ProducerConfig();
         p.setTopic(topic);
-        List<ProducerConfig> existing = new java.util.ArrayList<>(props.getProducers());
-        existing.add(p);
+        Map<String, ProducerConfig> existing = new LinkedHashMap<>(props.getProducers());
+        existing.put(topic + "-producer", p);
         props.setProducers(existing);
     }
 }

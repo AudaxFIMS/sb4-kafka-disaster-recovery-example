@@ -12,6 +12,7 @@ import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -26,12 +27,29 @@ public class ResilientProducer {
     private final StreamBridge streamBridge;
     private final ActiveClusterManager clusterManager;
     private final int maxRetries;
+    private final Map<String, String> bindingByTopic;
 
     public ResilientProducer(StreamBridge streamBridge, ActiveClusterManager clusterManager,
                              KafkaClusterProperties properties) {
         this.streamBridge = streamBridge;
         this.clusterManager = clusterManager;
         this.maxRetries = properties.getHealthCheck().getFailureThreshold();
+        this.bindingByTopic = indexBindingsByTopic(properties);
+    }
+
+    private static Map<String, String> indexBindingsByTopic(KafkaClusterProperties properties) {
+        Map<String, String> index = new HashMap<>();
+        for (KafkaClusterProperties.ProducerConfig producer : properties.getProducers().values()) {
+            String topic = producer.getTopic();
+            String bindingName = KafkaClusterProperties.producerBindingName(producer.getName());
+            String prev = index.put(topic, bindingName);
+            if (prev != null) {
+                throw new IllegalStateException(
+                        "Multiple producers configured for topic '" + topic + "' — " +
+                                "producers must have unique topics");
+            }
+        }
+        return index;
     }
 
     /**
@@ -135,7 +153,12 @@ public class ResilientProducer {
 
     private SendOutcome trySendWithRetries(String topic, String cluster, Message<?> originalMessage,
                                            String messageId) {
-        String bindingName = KafkaClusterProperties.producerBindingName(topic);
+        String bindingName = bindingByTopic.get(topic);
+        if (bindingName == null) {
+            throw new IllegalArgumentException(
+                    "No producer configured for topic '" + topic + "'. " +
+                            "Add an entry under kafka-dr.producers");
+        }
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 if (streamBridge.send(bindingName, cluster, originalMessage)) {

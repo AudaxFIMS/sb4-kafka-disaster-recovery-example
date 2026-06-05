@@ -10,6 +10,7 @@ import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.Instant;
 import java.time.LocalTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -184,12 +185,11 @@ class ActiveClusterManagerTest {
     @Test
     void failbackThresholdIsBumpedToNextDayWhenFailoverWasAfterFailbackTime() {
         KafkaClusterProperties props = threeClusters();
-        java.time.LocalTime earlyTime = java.time.LocalTime.of(2, 0, 0);
+        LocalTime earlyTime = LocalTime.of(2, 0, 0);
         props.getFailover().setFailbackAfter(earlyTime.toString());
 
-        java.time.ZonedDateTime nowSystem = java.time.ZonedDateTime.now();
-        java.time.ZonedDateTime nightTime = nowSystem.with(java.time.LocalTime.of(23, 0, 0))
-                .minusDays(1);
+        ZonedDateTime nowSystem = ZonedDateTime.now();
+        ZonedDateTime nightTime = nowSystem.with(LocalTime.of(23, 0, 0)).minusDays(1);
         InMemoryFailoverStateStore store = new InMemoryFailoverStateStore();
         store.save(new FailoverState("secondary", nightTime.toInstant()));
 

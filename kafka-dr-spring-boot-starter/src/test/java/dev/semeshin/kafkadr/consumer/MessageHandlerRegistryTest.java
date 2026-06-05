@@ -8,6 +8,7 @@ import org.springframework.messaging.support.MessageBuilder;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -243,7 +244,7 @@ class MessageHandlerRegistryTest {
         c.setTopic(topic);
         c.setHandler(handler);
         c.setContentType(contentType);
-        props.setConsumers(List.of(c));
+        props.setConsumers(Map.of(topic, c));
         return props;
     }
 

@@ -126,8 +126,8 @@ public class BindingLifecycleManager {
         Map<String, List<String>> index = new HashMap<>();
         for (String cluster : properties.getClusters().keySet()) {
             List<String> bindings = new ArrayList<>();
-            for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers()) {
-                bindings.add(KafkaClusterProperties.bindingName(consumer.getTopic(), cluster));
+            for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers().values()) {
+                bindings.add(KafkaClusterProperties.bindingName(consumer.getName(), cluster));
             }
             index.put(cluster, bindings);
         }

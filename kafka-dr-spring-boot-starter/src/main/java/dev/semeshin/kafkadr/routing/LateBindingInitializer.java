@@ -60,9 +60,9 @@ public class LateBindingInitializer {
 
         // Collect all consumer function beans
         this.functionBeans = new ConcurrentHashMap<>();
-        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers()) {
+        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers().values()) {
             for (String cluster : properties.getClusters().keySet()) {
-                String beanName = KafkaClusterProperties.functionName(consumer.getTopic(), cluster);
+                String beanName = KafkaClusterProperties.functionName(consumer.getName(), cluster);
                 try {
                     @SuppressWarnings("unchecked")
                     Consumer<Message<?>> bean =
@@ -114,14 +114,15 @@ public class LateBindingInitializer {
                 (Binder<MessageChannel, ? extends ConsumerProperties, ?>)
                         binderFactory.getBinder(cluster, MessageChannel.class);
 
-        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers()) {
+        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers().values()) {
+            String consumerName = consumer.getName();
             String topic = consumer.getTopic();
-            String functionName = KafkaClusterProperties.functionName(topic, cluster);
+            String functionName = KafkaClusterProperties.functionName(consumerName, cluster);
             String bindingName = functionName + "-in-0";
 
             Consumer<Message<?>> handler = functionBeans.get(functionName);
             if (handler == null) {
-                log.warn("[{}][{}] No function bean found, skipping", cluster, topic);
+                log.warn("[{}][{}] No function bean found, skipping", cluster, consumerName);
                 continue;
             }
 
@@ -131,7 +132,7 @@ public class LateBindingInitializer {
                 try {
                     handler.accept(message);
                 } catch (Exception e) {
-                    log.error("[{}][{}] Error in late-bound consumer: {}", cluster, topic, e.getMessage());
+                    log.error("[{}][{}] Error in late-bound consumer: {}", cluster, consumerName, e.getMessage());
                 }
             });
 
@@ -167,7 +168,7 @@ public class LateBindingInitializer {
                     .bindConsumer(destination, group, channel, extendedProps);
 
             lateBindings.put(bindingName, binding);
-            log.info("[{}][{}] Created late binding: {}", cluster, topic, bindingName);
+            log.info("[{}][{}] Created late binding: {}", cluster, consumerName, bindingName);
         }
     }
 
@@ -176,12 +177,12 @@ public class LateBindingInitializer {
      * Called by BindingLifecycleManager when switching to this cluster.
      */
     public void startBindings(String cluster) {
-        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers()) {
-            String bindingName = KafkaClusterProperties.bindingName(consumer.getTopic(), cluster);
+        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers().values()) {
+            String bindingName = KafkaClusterProperties.bindingName(consumer.getName(), cluster);
             var binding = lateBindings.get(bindingName);
             if (binding != null) {
                 binding.start();
-                log.info("[{}][{}] Started late binding", cluster, consumer.getTopic());
+                log.info("[{}][{}] Started late binding", cluster, consumer.getName());
             }
         }
     }
@@ -190,12 +191,12 @@ public class LateBindingInitializer {
      * Stop consumer bindings for a late-initialized cluster.
      */
     public void stopBindings(String cluster) {
-        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers()) {
-            String bindingName = KafkaClusterProperties.bindingName(consumer.getTopic(), cluster);
+        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers().values()) {
+            String bindingName = KafkaClusterProperties.bindingName(consumer.getName(), cluster);
             var binding = lateBindings.get(bindingName);
             if (binding != null) {
                 binding.stop();
-                log.info("[{}][{}] Stopped late binding", cluster, consumer.getTopic());
+                log.info("[{}][{}] Stopped late binding", cluster, consumer.getName());
             }
         }
     }

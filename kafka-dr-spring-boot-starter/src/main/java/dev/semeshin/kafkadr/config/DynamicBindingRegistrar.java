@@ -132,11 +132,12 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
      * Binder child contexts are only created when a function references the binding.
      */
     private void generateConsumerBindingProperties(KafkaClusterProperties props, Map<String, Object> generated) {
-        for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers()) {
+        for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers().values()) {
+            String consumerName = consumer.getName();
             String topic = consumer.getTopic();
 
             for (String cluster : props.getClusters().keySet()) {
-                String functionName = KafkaClusterProperties.functionName(topic, cluster);
+                String functionName = KafkaClusterProperties.functionName(consumerName, cluster);
                 String bindingName = functionName + "-in-0";
                 String prefix = "spring.cloud.stream.bindings." + bindingName;
 
@@ -165,17 +166,17 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
     private void generateFunctionDefinitions(KafkaClusterProperties props,
                                              List<String> functionNames,
                                              Set<String> reachableClusters) {
-        for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers()) {
+        for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers().values()) {
             for (String cluster : reachableClusters) {
-                functionNames.add(KafkaClusterProperties.functionName(consumer.getTopic(), cluster));
+                functionNames.add(KafkaClusterProperties.functionName(consumer.getName(), cluster));
             }
         }
     }
 
     private void generateProducerBindings(KafkaClusterProperties props, Map<String, Object> generated) {
-        for (KafkaClusterProperties.ProducerConfig producer : props.getProducers()) {
+        for (KafkaClusterProperties.ProducerConfig producer : props.getProducers().values()) {
             String topic = producer.getTopic();
-            String bindingName = KafkaClusterProperties.producerBindingName(topic);
+            String bindingName = KafkaClusterProperties.producerBindingName(producer.getName());
 
             for (String outBinding : List.of(bindingName, bindingName + "-out-0")) {
                 String prefix = "spring.cloud.stream.bindings." + outBinding;
@@ -198,10 +199,10 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
 
         BeanFactory beanFactory = (BeanFactory) registry;
 
-        for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers()) {
-            String topic = consumer.getTopic();
+        for (KafkaClusterProperties.ConsumerConfig consumer : props.getConsumers().values()) {
+            String consumerName = consumer.getName();
             for (String cluster : props.getClusters().keySet()) {
-                String beanName = KafkaClusterProperties.functionName(topic, cluster);
+                String beanName = KafkaClusterProperties.functionName(consumerName, cluster);
 
                 GenericBeanDefinition beanDef = new GenericBeanDefinition();
                 beanDef.setBeanClass(Consumer.class);
@@ -210,7 +211,8 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                     MessageHandlerRegistry handlerRegistry = beanFactory.getBean(MessageHandlerRegistry.class);
                     LastProcessedTimestampTracker tracker = beanFactory.getBean(LastProcessedTimestampTracker.class);
                     String keyHeader = props.getIdempotency().getKeyHeader();
-                    return new IdempotentConsumer(topic, cluster, store, handlerRegistry.getHandler(topic), keyHeader, tracker);
+                    return new IdempotentConsumer(consumerName, cluster, store,
+                            handlerRegistry.getHandler(consumerName), keyHeader, tracker);
                 });
 
                 registry.registerBeanDefinition(beanName, beanDef);

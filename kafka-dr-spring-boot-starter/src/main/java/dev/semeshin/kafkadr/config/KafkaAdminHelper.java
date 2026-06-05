@@ -51,8 +51,8 @@ public final class KafkaAdminHelper {
 
     public static void provisionTopics(String cluster, String brokers, KafkaClusterProperties props, int timeoutMs) {
         Set<String> requiredTopics = Stream.concat(
-                props.getConsumers().stream().map(KafkaClusterProperties.ConsumerConfig::getTopic),
-                props.getProducers().stream().map(KafkaClusterProperties.ProducerConfig::getTopic)
+                props.getConsumers().values().stream().map(KafkaClusterProperties.ConsumerConfig::getTopic),
+                props.getProducers().values().stream().map(KafkaClusterProperties.ProducerConfig::getTopic)
         ).collect(Collectors.toSet());
 
         if (requiredTopics.isEmpty()) return;
