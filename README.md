@@ -83,7 +83,8 @@ The project is structured as a multi-module Maven build:
 - **Synchronous send with ACK** — `sync: true` + `acks: all` ensures broker acknowledgement before returning success, preventing silent message loss
 - **Consumer binding management** — only the active cluster's consumers are running; others are stopped
 - **Producer cache cleanup** — dead cluster producers are closed to prevent reconnect noise
-- **Idempotent message processing** — pluggable deduplication via `IdempotencyStore` interface (in-memory default, Redis example included)
+- **Idempotent message processing** — pluggable deduplication via `IdempotencyStore` interface; the store receives the full message, so custom implementations can dedup by any header or payload data (in-memory key-based default, Redis example included)
+- **Poison-pill protection** — wrap any deserializer in `ErrorHandlingDeserializer` via per-consumer `properties.configuration`; malformed messages are logged and skipped (or sent to a DLQ) without reaching your handler
 - **Restart-safe failback gate** — pluggable `FailoverStateStore` persists which cluster the app is pinned to after a failover plus the failover timestamp; `failback-after` is honored across restarts (in-memory default, Redis example included)
 - **Multi-format support** — String, JSON, Avro, and raw bytes payloads with per-topic configuration
 - **Fully dynamic configuration** — clusters, consumers, and producers are defined in YAML; no code changes needed
@@ -623,6 +624,56 @@ kafka-dr:
 | `native` | No conversion; Kafka deserializer handles it | Avro, Protobuf |
 | `bytes` | No conversion; raw `byte[]` | Binary data |
 
+#### Skipping malformed messages (`ErrorHandlingDeserializer`)
+
+If a topic may contain messages your deserializer can't parse (e.g. you consume Avro but other producers occasionally write a different format), wrap the deserializer in Spring Kafka's `ErrorHandlingDeserializer` with the real deserializer as delegate. Kafka client properties pass through per-consumer `properties.configuration`, so no framework changes are needed:
+
+```yaml
+kafka-dr:
+  consumers:
+    payment-events-consumer:
+      topic: payment-events
+      group: my-group
+      handler: processPayment
+      content-type: native
+      properties:
+        configuration:
+          value.deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+          spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+          specific.avro.reader: "true"
+```
+
+Behavior:
+
+- **Valid messages** are deserialized by the delegate as usual and reach your handler (here as an Avro `SpecificRecord`).
+- **Malformed messages** never reach your handler. The listener container detects the deserialization failure *before* invoking the consumer function, throws a `DeserializationException`, and the default error handler classifies it as fatal: no retries, the error is logged, the offset is committed, and consumption continues with the next record. The idempotency store and the last-processed-timestamp tracker are not touched.
+- The configuration is applied to the consumer bindings of **every cluster**, so the behavior is identical after failover.
+
+If the message **key** can also be malformed, wrap it the same way: `key.deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer` + `spring.deserializer.key.delegate.class: <real key deserializer>`.
+
+To capture skipped records instead of only logging them, enable the binder DLQ in the same `properties` block (outside `configuration`):
+
+```yaml
+      properties:
+        enable-dlq: true
+        dlq-name: payment-events-dlq
+        configuration:
+          value.deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+          spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+```
+
+The DLQ producer belongs to the cluster's own binder, so each cluster gets its own DLQ topic.
+
+Quick test with the example app — send non-Avro garbage straight into `payment-events` and watch it being skipped while the app keeps consuming:
+
+```bash
+docker exec -it kafka-primary kafka-console-producer \
+  --bootstrap-server localhost:9092 --topic payment-events <<< 'not-avro-garbage'
+# App log: ErrorHandlingDeserializer / DeserializationException is logged, record skipped.
+# Valid Avro messages sent via the REST API continue to be processed normally:
+curl -X POST 'localhost:8080/api/messages/payment-events/avro?paymentId=pay-1&orderId=ord-1&amount=99.95'
+```
+
 ### Producers
 
 ```yaml
@@ -807,19 +858,41 @@ Messages without a key (or without the configured header) are processed without 
 
 The framework provides `InMemoryIdempotencyStore` as default fallback — it is registered as a `@Bean` in `KafkaDrAutoConfiguration` with `@ConditionalOnMissingBean(IdempotencyStore.class)`. This ensures proper ordering: Spring processes application `@Component` beans first, then auto-configuration `@Bean` methods. If any `IdempotencyStore` is already registered, the in-memory fallback is skipped.
 
-To replace it, register any `@Component implements IdempotencyStore` in your application:
+#### Custom `IdempotencyStore`
+
+The SPI receives the **full message** — headers and payload — so the deduplication decision can be based on anything: the Kafka key, any header, or data extracted from the payload itself. Two customization points:
+
+**Override `extractKey` only** — keep the storage logic of an existing implementation, change just how the key is derived. The built-in stores call `extractKey(consumerName, message)` from `tryProcess`, so this is the lightest way to customize:
+
+```java
+@Component
+public class PayloadKeyedStore extends InMemoryIdempotencyStore {   // or RedisIdempotencyStore
+    @Override
+    public String extractKey(String consumerName, Message<?> message) {
+        // any header or payload data; consumerName allows per-consumer logic
+        return ((OrderEvent) message.getPayload()).getOrderId();
+    }
+}
+```
+
+The default `extractKey` uses the Kafka record key (`KafkaHeaders.RECEIVED_KEY`, then `KafkaHeaders.KEY`; `byte[]` → UTF-8); the built-in stores honor the configured `key-header`. Returning `null` means "no key" — built-in stores then process the message without idempotency check.
+
+**Implement the whole store** — full control over both key extraction and storage. Return `true` to process the message, `false` to skip it as a duplicate:
 
 ```java
 @Component
 public class MyIdempotencyStore implements IdempotencyStore {
     @Override
-    public boolean tryProcess(String consumerName, String messageId) {
-        // your deduplication logic
+    public boolean tryProcess(String consumerName, Message<?> message) {
+        String key = extractKey(consumerName, message);   // default Kafka-key logic, or override it
+        return markAsProcessedIfFirstTime(consumerName, key);
     }
 }
 ```
 
-The example app includes `RedisIdempotencyStore` as a custom implementation.
+The static helper `IdempotencyStore.kafkaKey(message, customKeyHeader)` exposes the default key-based extraction (including custom-header support) for reuse. The example app includes `RedisIdempotencyStore` built on it.
+
+> **Migration note:** the SPI changed from `tryProcess(String consumerName, String messageId)` to `tryProcess(String consumerName, Message<?> message)`. Key extraction moved from `IdempotentConsumer` into the store: existing key-based implementations should call `extractKey(consumerName, message)` (or the static `IdempotencyStore.kafkaKey(message, keyHeader)`) and handle the `null` (no key) case by returning `true`.
 
 ## Adding Business Logic
 

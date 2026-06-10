@@ -2,6 +2,7 @@ package dev.semeshin.kafkadr;
 
 import dev.semeshin.kafkadr.config.AdminClientFactory;
 import dev.semeshin.kafkadr.config.DefaultAdminClientFactory;
+import dev.semeshin.kafkadr.config.KafkaClusterProperties;
 import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.consumer.TimestampSeekRebalanceListener;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
@@ -29,8 +30,8 @@ public class KafkaDrAutoConfiguration {
 
     @Bean
     @ConditionalOnMissingBean(IdempotencyStore.class)
-    public InMemoryIdempotencyStore inMemoryIdempotencyStore() {
-        return new InMemoryIdempotencyStore();
+    public InMemoryIdempotencyStore inMemoryIdempotencyStore(KafkaClusterProperties properties) {
+        return new InMemoryIdempotencyStore(properties.getIdempotency().getKeyHeader());
     }
 
     @Bean

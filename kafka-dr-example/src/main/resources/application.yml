@@ -61,7 +61,11 @@ kafka-dr:
       content-type: native
       properties:
         configuration:
-          value.deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+          # ErrorHandlingDeserializer delegates to the Avro deserializer; records that
+          # fail deserialization (e.g. non-Avro garbage in the topic) are logged and
+          # skipped by the container — they never reach the handler.
+          value.deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+          spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
           specific.avro.reader: "true"
 
     raw-telemetry-consumer:

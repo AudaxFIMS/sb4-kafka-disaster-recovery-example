@@ -210,9 +210,8 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                     IdempotencyStore store = beanFactory.getBean(IdempotencyStore.class);
                     MessageHandlerRegistry handlerRegistry = beanFactory.getBean(MessageHandlerRegistry.class);
                     LastProcessedTimestampTracker tracker = beanFactory.getBean(LastProcessedTimestampTracker.class);
-                    String keyHeader = props.getIdempotency().getKeyHeader();
                     return new IdempotentConsumer(consumerName, cluster, store,
-                            handlerRegistry.getHandler(consumerName), keyHeader, tracker);
+                            handlerRegistry.getHandler(consumerName), tracker);
                 });
 
                 registry.registerBeanDefinition(beanName, beanDef);

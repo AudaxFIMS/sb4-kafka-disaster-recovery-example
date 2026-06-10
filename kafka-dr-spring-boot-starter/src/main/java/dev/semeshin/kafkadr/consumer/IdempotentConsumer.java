@@ -6,12 +6,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 
-import java.nio.charset.StandardCharsets;
 import java.util.function.Consumer;
 
 /**
  * Wraps any message consumer with idempotency check.
  * Accepts Message<?> — the payload type is determined by the downstream handler.
+ * The deduplication decision is fully delegated to the IdempotencyStore,
+ * which receives the complete message (headers + payload).
  */
 public class IdempotentConsumer implements Consumer<Message<?>> {
 
@@ -21,40 +22,30 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
     private final String clusterName;
     private final IdempotencyStore idempotencyStore;
     private final Consumer<Message<?>> delegate;
-    private final String keyHeader;
     private final LastProcessedTimestampTracker timestampTracker;
 
     public IdempotentConsumer(String consumerName,
                               String clusterName,
                               IdempotencyStore idempotencyStore,
                               Consumer<Message<?>> delegate,
-                              String keyHeader,
                               LastProcessedTimestampTracker timestampTracker) {
         this.consumerName = consumerName;
         this.clusterName = clusterName;
         this.idempotencyStore = idempotencyStore;
         this.delegate = delegate;
-        this.keyHeader = keyHeader;
         this.timestampTracker = timestampTracker;
     }
 
     @Override
     public void accept(Message<?> msg) {
-        String key = extractKey(msg);
-
-        if (key == null) {
-            log.warn("[{}][{}] Message without key, processing without idempotency check",
-                    clusterName, consumerName);
-            delegate.accept(msg);
+        if (!idempotencyStore.tryProcess(consumerName, msg)) {
+            log.info("[{}][{}] Duplicate skipped: idempotency key={}", clusterName, consumerName,
+                    idempotencyStore.extractKey(consumerName, msg));
             return;
         }
 
-        if (!idempotencyStore.tryProcess(consumerName, key)) {
-            log.info("[{}][{}] Duplicate skipped: key={}", clusterName, consumerName, key);
-            return;
-        }
-
-        log.info("[{}][{}] Processing: key={}", clusterName, consumerName, key);
+        log.info("[{}][{}] Processing: idempotency key={}", clusterName, consumerName,
+                idempotencyStore.extractKey(consumerName, msg));
         delegate.accept(msg);
         trackTimestamp(msg);
     }
@@ -65,25 +56,5 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
         if (timestamp != null) {
             timestampTracker.update(consumerName, timestamp);
         }
-    }
-
-    private String extractKey(Message<?> msg) {
-        // If custom header is configured, use it
-        if (keyHeader != null && !keyHeader.isBlank()) {
-            Object key = msg.getHeaders().get(keyHeader);
-            return keyToString(key);
-        }
-        // Default: Kafka record key (RECEIVED_KEY on consumer side, KEY on producer side)
-        Object key = msg.getHeaders().get(KafkaHeaders.RECEIVED_KEY);
-        if (key == null) {
-            key = msg.getHeaders().get(KafkaHeaders.KEY);
-        }
-        return keyToString(key);
-    }
-
-    private static String keyToString(Object key) {
-        if (key == null) return null;
-        if (key instanceof byte[] bytes) return new String(bytes, StandardCharsets.UTF_8);
-        return key.toString();
     }
 }

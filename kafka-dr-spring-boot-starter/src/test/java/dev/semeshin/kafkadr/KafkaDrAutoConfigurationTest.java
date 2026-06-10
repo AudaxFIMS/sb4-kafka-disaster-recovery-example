@@ -1,6 +1,7 @@
 package dev.semeshin.kafkadr;
 
 import dev.semeshin.kafkadr.config.DefaultAdminClientFactory;
+import dev.semeshin.kafkadr.config.KafkaClusterProperties;
 import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import dev.semeshin.kafkadr.idempotency.InMemoryIdempotencyStore;
@@ -13,6 +14,9 @@ import org.springframework.cloud.stream.config.ListenerContainerCustomizer;
 import org.springframework.kafka.listener.AbstractMessageListenerContainer;
 import org.springframework.kafka.listener.ConsumerAwareRebalanceListener;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.messaging.Message;
+import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
@@ -43,11 +47,14 @@ class KafkaDrAutoConfigurationTest {
     @Test
     void inMemoryIdempotencyStoreFactoryBeanCreatesValidInstance() {
         KafkaDrAutoConfiguration cfg = new KafkaDrAutoConfiguration();
-        InMemoryIdempotencyStore store = cfg.inMemoryIdempotencyStore();
+        InMemoryIdempotencyStore store = cfg.inMemoryIdempotencyStore(new KafkaClusterProperties());
 
         assertThat(store).isNotNull();
-        assertThat(store.tryProcess("c", "id-1")).isTrue();
-        assertThat(store.tryProcess("c", "id-1")).isFalse();
+        Message<?> msg = MessageBuilder.withPayload("payload")
+                .setHeader(KafkaHeaders.RECEIVED_KEY, "id-1")
+                .build();
+        assertThat(store.tryProcess("c", msg)).isTrue();
+        assertThat(store.tryProcess("c", msg)).isFalse();
     }
 
     @Test
