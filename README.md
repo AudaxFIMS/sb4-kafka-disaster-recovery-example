@@ -33,6 +33,29 @@
 >
 > See [Consumers](#consumers) and [Producers](#producers) for the full migration guide.
 
+> ## ℹ️ Idempotency is ENABLED by default
+>
+> The deduplication mechanism is active out of the box — every consumed message goes through an `IdempotencyStore` check (`InMemoryIdempotencyStore` unless you provide your own). To switch it off, set the flag explicitly:
+>
+> ```yaml
+> # ✅ DEFAULT — idempotency is on, no configuration required
+> kafka-dr:
+>   enabled: true
+>
+> # ⛔ OPT OUT — disable deduplication entirely
+> kafka-dr:
+>   enabled: true
+>   idempotency:
+>     enabled: false
+> ```
+>
+> **When disabled:**
+> - No `IdempotencyStore` bean is created (including the in-memory fallback), and any user-defined store is ignored by the consumer chain.
+> - Every message is processed without a deduplication check — duplicates from cross-cluster replication during failover will reach your handlers.
+> - Timestamp tracking for `seek-by-timestamp` failover keeps working regardless of this flag.
+>
+> See [Idempotency](#idempotency) for details.
+
 ---
 
 A production-ready **Spring Boot starter** for **active-passive disaster recovery** across N Kafka clusters. The framework automatically detects cluster failures, switches producers and consumers to the next healthy cluster, and fails back when the original cluster recovers.
@@ -842,10 +865,13 @@ The `kafka-dr-example-timestamp-seek` module includes `RedisTimestampStore` as a
 ```yaml
 kafka-dr:
   idempotency:
+    enabled: true            # Master switch; true by default — set false to disable deduplication
     ttl-seconds: 3600        # How long to remember processed message IDs
     key-prefix: idempotency  # Key prefix for store implementations
     # key-header: x-idempotency-key  # Optional: use a custom header instead of Kafka key
 ```
+
+Idempotency is **enabled by default**. Setting `kafka-dr.idempotency.enabled=false` switches the mechanism off entirely: no `IdempotencyStore` bean is created (including the in-memory fallback), any user-defined store is ignored by the consumer chain, and every message is processed without a deduplication check. Timestamp tracking for `seek-by-timestamp` failover keeps working regardless of this flag.
 
 By default, idempotency uses **Kafka record key** (`KafkaHeaders.RECEIVED_KEY`) as the deduplication key — no custom headers required. To use a custom message header instead, set `key-header`:
 

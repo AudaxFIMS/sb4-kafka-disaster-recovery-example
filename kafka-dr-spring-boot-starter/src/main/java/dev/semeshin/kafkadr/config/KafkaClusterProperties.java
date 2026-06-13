@@ -67,6 +67,8 @@ public class KafkaClusterProperties {
     public IdempotencyConfig getIdempotency() { return idempotency; }
     public void setIdempotency(IdempotencyConfig idempotency) { this.idempotency = idempotency; }
 
+    public boolean isIdempotencyEnabled() { return idempotency.isEnabled(); }
+
     public static class ClusterConfig {
         private String bootstrapServers;
         private int priority = 100;
@@ -237,10 +239,19 @@ public class KafkaClusterProperties {
     }
 
     public static class IdempotencyConfig {
+        /**
+         * Master switch for the idempotency mechanism. Enabled by default;
+         * set kafka-dr.idempotency.enabled=false to skip deduplication entirely —
+         * no IdempotencyStore bean is used and consumers process every message.
+         */
+        private boolean enabled = true;
+
         private long ttlSeconds = 3600;
         private String keyPrefix = "idempotency";
         private String keyHeader;
 
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public long getTtlSeconds() { return ttlSeconds; }
         public void setTtlSeconds(long ttlSeconds) { this.ttlSeconds = ttlSeconds; }
         public String getKeyPrefix() { return keyPrefix; }

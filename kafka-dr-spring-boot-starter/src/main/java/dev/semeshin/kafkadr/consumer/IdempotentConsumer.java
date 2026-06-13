@@ -38,14 +38,13 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
 
     @Override
     public void accept(Message<?> msg) {
-        if (!idempotencyStore.tryProcess(consumerName, msg)) {
-            log.info("[{}][{}] Duplicate skipped: idempotency key={}", clusterName, consumerName,
-                    idempotencyStore.extractKey(consumerName, msg));
+        if (!idempotencyStore.tryProcess(clusterName, consumerName, msg)) {
+            log.info("[{}][{}] Duplicate skipped: idempotency key={}", clusterName, consumerName, idempotencyStore.extractKey(msg));
             return;
         }
 
-        log.info("[{}][{}] Processing: idempotency key={}", clusterName, consumerName,
-                idempotencyStore.extractKey(consumerName, msg));
+        log.info("[{}][{}] Processing: key={}", clusterName, consumerName, IdempotencyStore.kafkaKey(msg, null));
+
         delegate.accept(msg);
         trackTimestamp(msg);
     }

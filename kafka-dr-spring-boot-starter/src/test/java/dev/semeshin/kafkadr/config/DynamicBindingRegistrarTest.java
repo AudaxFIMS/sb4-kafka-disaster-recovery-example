@@ -3,6 +3,7 @@ package dev.semeshin.kafkadr.config;
 import dev.semeshin.kafkadr.consumer.IdempotentConsumer;
 import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.consumer.MessageHandlerRegistry;
+import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import dev.semeshin.kafkadr.idempotency.InMemoryIdempotencyStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,9 +14,11 @@ import org.springframework.beans.factory.support.GenericBeanDefinition;
 import org.springframework.core.env.MapPropertySource;
 import org.springframework.core.env.StandardEnvironment;
 import org.springframework.messaging.Message;
+import org.springframework.messaging.support.MessageBuilder;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -24,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class DynamicBindingRegistrarTest {
@@ -270,6 +274,37 @@ class DynamicBindingRegistrarTest {
         Consumer<Message<?>> bean = registry.getBean("ordersPrimary", Consumer.class);
 
         assertThat(bean).isInstanceOf(IdempotentConsumer.class);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void disabledIdempotencyIgnoresStoreBeanAndProcessesEveryMessage() {
+        Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
+        props.put("kafka-dr.idempotency.enabled", "false");
+        loadProperties(props);
+        allClustersReachable();
+
+        // A store that marks everything as duplicate — must never be consulted
+        IdempotencyStore rejectAll = mock(IdempotencyStore.class);
+        when(rejectAll.tryProcess(anyString(), anyString(), any())).thenReturn(false);
+        registry.registerSingleton("idempotencyStore", rejectAll);
+
+        MessageHandlerRegistry handlerRegistry = mock(MessageHandlerRegistry.class);
+        AtomicInteger processed = new AtomicInteger();
+        Consumer<Message<?>> stubHandler = msg -> processed.incrementAndGet();
+        when(handlerRegistry.getHandler(anyString())).thenReturn(stubHandler);
+        registry.registerSingleton("messageHandlerRegistry", handlerRegistry);
+        registry.registerSingleton("lastProcessedTimestampTracker", new LastProcessedTimestampTracker(null));
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+
+        Consumer<Message<?>> bean = registry.getBean("ordersPrimary", Consumer.class);
+        Message<?> msg = MessageBuilder.withPayload("p").build();
+        bean.accept(msg);
+        bean.accept(msg);
+
+        assertThat(processed.get()).isEqualTo(2);
+        verifyNoInteractions(rejectAll);
     }
 
     @Test

@@ -23,32 +23,32 @@ class InMemoryIdempotencyStoreTest {
 
     @Test
     void firstCallReturnsTrue() {
-        assertThat(store.tryProcess("orders-consumer", messageWithKey("msg-1"))).isTrue();
+        assertThat(store.tryProcess("primary", "orders-consumer", messageWithKey("msg-1"))).isTrue();
     }
 
     @Test
     void duplicateCallReturnsFalse() {
-        store.tryProcess("orders-consumer", messageWithKey("msg-1"));
-        assertThat(store.tryProcess("orders-consumer", messageWithKey("msg-1"))).isFalse();
+        store.tryProcess("primary", "orders-consumer", messageWithKey("msg-1"));
+        assertThat(store.tryProcess("primary", "orders-consumer", messageWithKey("msg-1"))).isFalse();
     }
 
     @Test
     void differentMessagesForSameConsumerAreIndependent() {
-        assertThat(store.tryProcess("orders-consumer", messageWithKey("msg-1"))).isTrue();
-        assertThat(store.tryProcess("orders-consumer", messageWithKey("msg-2"))).isTrue();
+        assertThat(store.tryProcess("primary", "orders-consumer", messageWithKey("msg-1"))).isTrue();
+        assertThat(store.tryProcess("primary", "orders-consumer", messageWithKey("msg-2"))).isTrue();
     }
 
     @Test
     void sameKeyAcrossDifferentConsumersIsNotADuplicate() {
-        store.tryProcess("orders-consumer", messageWithKey("shared-id"));
-        assertThat(store.tryProcess("payments-consumer", messageWithKey("shared-id"))).isTrue();
+        store.tryProcess("primary", "orders-consumer", messageWithKey("shared-id"));
+        assertThat(store.tryProcess("primary", "payments-consumer", messageWithKey("shared-id"))).isTrue();
     }
 
     @Test
     void messageWithoutKeyIsAlwaysProcessed() {
         Message<?> noKey = MessageBuilder.withPayload("payload").build();
-        assertThat(store.tryProcess("orders-consumer", noKey)).isTrue();
-        assertThat(store.tryProcess("orders-consumer", noKey)).isTrue();
+        assertThat(store.tryProcess("primary", "orders-consumer", noKey)).isTrue();
+        assertThat(store.tryProcess("primary", "orders-consumer", noKey)).isTrue();
     }
 
     @Test
@@ -56,8 +56,8 @@ class InMemoryIdempotencyStoreTest {
         Message<?> bytesKey = MessageBuilder.withPayload("payload")
                 .setHeader(KafkaHeaders.RECEIVED_KEY, "o-1".getBytes())
                 .build();
-        store.tryProcess("orders-consumer", bytesKey);
-        assertThat(store.tryProcess("orders-consumer", messageWithKey("o-1"))).isFalse();
+        store.tryProcess("primary", "orders-consumer", bytesKey);
+        assertThat(store.tryProcess("primary", "orders-consumer", messageWithKey("o-1"))).isFalse();
     }
 
     @Test
@@ -65,8 +65,8 @@ class InMemoryIdempotencyStoreTest {
         Message<?> producerKey = MessageBuilder.withPayload("payload")
                 .setHeader(KafkaHeaders.KEY, "k-1")
                 .build();
-        store.tryProcess("orders-consumer", producerKey);
-        assertThat(store.tryProcess("orders-consumer", messageWithKey("k-1"))).isFalse();
+        store.tryProcess("primary", "orders-consumer", producerKey);
+        assertThat(store.tryProcess("primary", "orders-consumer", messageWithKey("k-1"))).isFalse();
     }
 
     @Test
@@ -77,14 +77,14 @@ class InMemoryIdempotencyStoreTest {
                 .setHeader("x-idempotency-key", "custom-key")
                 .build();
 
-        assertThat(headerStore.tryProcess("orders-consumer", msg)).isTrue();
+        assertThat(headerStore.tryProcess("primary", "orders-consumer", msg)).isTrue();
 
         // same custom header but different kafka key — still a duplicate
         Message<?> sameHeaderDifferentKafkaKey = MessageBuilder.withPayload("payload")
                 .setHeader(KafkaHeaders.RECEIVED_KEY, "other-kafka-key")
                 .setHeader("x-idempotency-key", "custom-key")
                 .build();
-        assertThat(headerStore.tryProcess("orders-consumer", sameHeaderDifferentKafkaKey)).isFalse();
+        assertThat(headerStore.tryProcess("primary", "orders-consumer", sameHeaderDifferentKafkaKey)).isFalse();
     }
 
     @Test
@@ -92,7 +92,7 @@ class InMemoryIdempotencyStoreTest {
         // Custom extraction: dedup by payload content instead of the Kafka key
         InMemoryIdempotencyStore payloadStore = new InMemoryIdempotencyStore() {
             @Override
-            public String extractKey(String consumerName, Message<?> message) {
+            public String extractKey(Message<?> message) {
                 return message.getPayload().toString();
             }
         };
@@ -104,19 +104,19 @@ class InMemoryIdempotencyStoreTest {
                 .setHeader(KafkaHeaders.RECEIVED_KEY, "key-b")
                 .build();
 
-        assertThat(payloadStore.tryProcess("c1", first)).isTrue();
-        assertThat(payloadStore.tryProcess("c1", samePayloadDifferentKey)).isFalse();
+        assertThat(payloadStore.tryProcess("primary", "c1", first)).isTrue();
+        assertThat(payloadStore.tryProcess("primary", "c1", samePayloadDifferentKey)).isFalse();
     }
 
     @Test
     void evictExpiredKeepsRecentEntries() {
-        store.tryProcess("c1", messageWithKey("fresh-1"));
-        store.tryProcess("c1", messageWithKey("fresh-2"));
+        store.tryProcess("primary", "c1", messageWithKey("fresh-1"));
+        store.tryProcess("primary", "c1", messageWithKey("fresh-2"));
 
         store.evictExpired();
 
-        assertThat(store.tryProcess("c1", messageWithKey("fresh-1"))).isFalse();
-        assertThat(store.tryProcess("c1", messageWithKey("fresh-2"))).isFalse();
+        assertThat(store.tryProcess("primary", "c1", messageWithKey("fresh-1"))).isFalse();
+        assertThat(store.tryProcess("primary", "c1", messageWithKey("fresh-2"))).isFalse();
     }
 
     @Test
@@ -128,9 +128,9 @@ class InMemoryIdempotencyStoreTest {
 
         store.evictExpired();
 
-        assertThat(store.tryProcess("c1", messageWithKey("old-1"))).isTrue();
-        assertThat(store.tryProcess("c1", messageWithKey("old-2"))).isTrue();
-        assertThat(store.tryProcess("c1", messageWithKey("fresh"))).isFalse();
+        assertThat(store.tryProcess("primary", "c1", messageWithKey("old-1"))).isTrue();
+        assertThat(store.tryProcess("primary", "c1", messageWithKey("old-2"))).isTrue();
+        assertThat(store.tryProcess("primary", "c1", messageWithKey("fresh"))).isFalse();
     }
 
     @SuppressWarnings("unchecked")

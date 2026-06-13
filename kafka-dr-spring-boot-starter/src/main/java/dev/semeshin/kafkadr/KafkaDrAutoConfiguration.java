@@ -29,6 +29,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class KafkaDrAutoConfiguration {
 
     @Bean
+    @ConditionalOnProperty(name = "kafka-dr.idempotency.enabled", havingValue = "true", matchIfMissing = true)
     @ConditionalOnMissingBean(IdempotencyStore.class)
     public InMemoryIdempotencyStore inMemoryIdempotencyStore(KafkaClusterProperties properties) {
         return new InMemoryIdempotencyStore(properties.getIdempotency().getKeyHeader());

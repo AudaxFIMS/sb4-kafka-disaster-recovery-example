@@ -207,7 +207,11 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                 GenericBeanDefinition beanDef = new GenericBeanDefinition();
                 beanDef.setBeanClass(Consumer.class);
                 beanDef.setInstanceSupplier(() -> {
-                    IdempotencyStore store = beanFactory.getBean(IdempotencyStore.class);
+                    // Master switch: with idempotency disabled the store bean is never
+                    // looked up, so even a user-defined store (e.g. Redis) is ignored.
+                    IdempotencyStore store = props.isIdempotencyEnabled()
+                            ? beanFactory.getBean(IdempotencyStore.class)
+                            : IdempotencyStore.DISABLED;
                     MessageHandlerRegistry handlerRegistry = beanFactory.getBean(MessageHandlerRegistry.class);
                     LastProcessedTimestampTracker tracker = beanFactory.getBean(LastProcessedTimestampTracker.class);
                     return new IdempotentConsumer(consumerName, cluster, store,

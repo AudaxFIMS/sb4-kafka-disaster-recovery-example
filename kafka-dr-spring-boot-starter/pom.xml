@@ -47,7 +47,6 @@
                 <configuration>
                     <excludes>
                         <exclude>**/MessageProcessor.class</exclude>
-                        <exclude>**/IdempotencyStore.class</exclude>
                         <exclude>**/FailoverStateStore.class</exclude>
                         <exclude>**/FailoverStateStore$*.class</exclude>
                         <exclude>**/TimestampStore.class</exclude>

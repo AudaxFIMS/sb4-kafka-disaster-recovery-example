@@ -1,6 +1,7 @@
 package dev.semeshin.kafkadr;
 
 import dev.semeshin.kafkadr.config.DefaultAdminClientFactory;
+import dev.semeshin.kafkadr.config.KafkaAdminHelper;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties;
 import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
@@ -10,7 +11,12 @@ import dev.semeshin.kafkadr.routing.InMemoryFailoverStateStore;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.springframework.cloud.stream.binder.BinderFactory;
+import org.springframework.cloud.stream.binding.BindingsLifecycleController;
+import org.springframework.cloud.stream.config.BindingServiceProperties;
 import org.springframework.cloud.stream.config.ListenerContainerCustomizer;
+import org.springframework.cloud.stream.function.StreamBridge;
 import org.springframework.kafka.listener.AbstractMessageListenerContainer;
 import org.springframework.kafka.listener.ConsumerAwareRebalanceListener;
 import org.springframework.kafka.listener.ContainerProperties;
@@ -18,6 +24,7 @@ import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.context.ConfigurationPropertiesAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import java.time.Instant;
@@ -26,12 +33,27 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
 class KafkaDrAutoConfigurationTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(KafkaDrAutoConfiguration.class));
+
+    /**
+     * Runner with kafka-dr enabled: component scan pulls in beans depending on
+     * Spring Cloud Stream infrastructure, so those collaborators are mocked.
+     */
+    private final ApplicationContextRunner enabledRunner = runner
+            .withConfiguration(AutoConfigurations.of(ConfigurationPropertiesAutoConfiguration.class))
+            .withPropertyValues(
+                    "kafka-dr.enabled=true",
+                    "kafka-dr.clusters.primary.bootstrap-servers=kafka-primary:9092")
+            .withBean(StreamBridge.class, () -> mock(StreamBridge.class))
+            .withBean(BindingsLifecycleController.class, () -> mock(BindingsLifecycleController.class))
+            .withBean(BinderFactory.class, () -> mock(BinderFactory.class))
+            .withBean(BindingServiceProperties.class, () -> mock(BindingServiceProperties.class));
 
     @Test
     void autoConfigurationDoesNotLoadWhenEnabledPropertyAbsent() {
@@ -45,6 +67,21 @@ class KafkaDrAutoConfigurationTest {
     }
 
     @Test
+    void idempotencyStoreIsRegisteredByDefault() {
+        try (MockedStatic<KafkaAdminHelper> ignored = mockStatic(KafkaAdminHelper.class)) {
+            enabledRunner.run(ctx -> assertThat(ctx).hasSingleBean(InMemoryIdempotencyStore.class));
+        }
+    }
+
+    @Test
+    void idempotencyStoreIsNotRegisteredWhenDisabled() {
+        try (MockedStatic<KafkaAdminHelper> ignored = mockStatic(KafkaAdminHelper.class)) {
+            enabledRunner.withPropertyValues("kafka-dr.idempotency.enabled=false")
+                    .run(ctx -> assertThat(ctx).doesNotHaveBean(IdempotencyStore.class));
+        }
+    }
+
+    @Test
     void inMemoryIdempotencyStoreFactoryBeanCreatesValidInstance() {
         KafkaDrAutoConfiguration cfg = new KafkaDrAutoConfiguration();
         InMemoryIdempotencyStore store = cfg.inMemoryIdempotencyStore(new KafkaClusterProperties());
@@ -53,8 +90,8 @@ class KafkaDrAutoConfigurationTest {
         Message<?> msg = MessageBuilder.withPayload("payload")
                 .setHeader(KafkaHeaders.RECEIVED_KEY, "id-1")
                 .build();
-        assertThat(store.tryProcess("c", msg)).isTrue();
-        assertThat(store.tryProcess("c", msg)).isFalse();
+        assertThat(store.tryProcess("primary", "c", msg)).isTrue();
+        assertThat(store.tryProcess("primary", "c", msg)).isFalse();
     }
 
     @Test

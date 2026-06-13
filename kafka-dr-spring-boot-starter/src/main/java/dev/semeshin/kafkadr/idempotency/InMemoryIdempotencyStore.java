@@ -40,24 +40,26 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
      * Override to derive the key from any headers or payload data.
      */
     @Override
-    public String extractKey(String consumerName, Message<?> message) {
+    public String extractKey(Message<?> message) {
         return IdempotencyStore.kafkaKey(message, keyHeader);
     }
 
     @Override
-    public boolean tryProcess(String consumerName, Message<?> message) {
-        String key = extractKey(consumerName, message);
+    public boolean tryProcess(String clusterName, String consumerName, Message<?> message) {
+        String key = extractKey(message);
         if (key == null) {
-            log.warn("[{}] Message without key, processing without idempotency check", consumerName);
+            log.warn("[{}][{}] Message without key, processing without idempotency check", clusterName, consumerName);
             return true;
         }
 
         String compositeKey = consumerName + ":" + key;
         Instant previous = processedIds.putIfAbsent(compositeKey, Instant.now());
         if (previous != null) {
-            log.debug("Duplicate detected: {}", compositeKey);
+            log.debug("[{}][{}] Duplicate message with idempotency key detected: {}", clusterName, consumerName, compositeKey);
             return false;
         }
+	    log.debug("[{}][{}] Message with idempotency key accepted: {}", clusterName, consumerName, compositeKey);
+
         return true;
     }
 

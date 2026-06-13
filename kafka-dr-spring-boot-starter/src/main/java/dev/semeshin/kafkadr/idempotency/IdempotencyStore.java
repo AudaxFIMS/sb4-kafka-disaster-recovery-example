@@ -10,20 +10,52 @@ import java.nio.charset.StandardCharsets;
  * Entries are scoped by consumer name to isolate different consumers/topics.
  *
  * <p>Implementations receive the full message and may derive the deduplication
- * key from any headers or payload data. Override {@link #extractKey(String, Message)}
+ * key from any headers or payload data. Override {@link #extractKey(Message)}
  * to customize key extraction only, keeping the storage logic of the base
  * implementation intact.
  */
 public interface IdempotencyStore {
 
     /**
+     * No-op store used when kafka-dr.idempotency.enabled=false: every message
+     * is processed, nothing is tracked. Lets IdempotentConsumer stay in the
+     * consumer chain (it still feeds the last-processed-timestamp tracker
+     * required for seek-by-timestamp failover).
+     */
+    IdempotencyStore DISABLED = new IdempotencyStore() {
+        @Override
+        public boolean tryProcess(String clusterName, String consumerName, Message<?> message) {
+            return true;
+        }
+
+        @Override
+        public String extractKey(Message<?> message) {
+            return null;
+        }
+
+        @Override
+        public boolean isEnabled() {
+            return false;
+        }
+    };
+
+    /**
+     * Whether deduplication is actually performed. The {@link #DISABLED} no-op
+     * returns false so callers can skip key extraction and dedup-related logging.
+     */
+    default boolean isEnabled() {
+        return true;
+    }
+
+    /**
      * Attempts to mark a message as processed for a given consumer.
      *
+     * @param clusterName logical cluster name (e.g. "primary" , "secondary" ...)
      * @param consumerName logical consumer name (e.g. "orders-consumer", "payments-consumer")
      * @param message      full message — headers and payload — to derive the deduplication key from
      * @return true if the message should be processed (not seen before), false if duplicate
      */
-    boolean tryProcess(String consumerName, Message<?> message);
+    boolean tryProcess(String clusterName, String consumerName, Message<?> message);
 
     /**
      * Extracts the deduplication key for a message. The built-in implementations
@@ -35,12 +67,11 @@ public interface IdempotencyStore {
      * (consumer side), then {@code KafkaHeaders.KEY} (producer side);
      * {@code byte[]} keys are converted to UTF-8 strings.
      *
-     * @param consumerName logical consumer name, for per-consumer extraction logic
      * @param message      full message — headers and payload
      * @return the key, or null if the message has no key (built-in stores then
      *         process the message without idempotency check)
      */
-    default String extractKey(String consumerName, Message<?> message) {
+    default String extractKey(Message<?> message) {
         return kafkaKey(message, null);
     }
 

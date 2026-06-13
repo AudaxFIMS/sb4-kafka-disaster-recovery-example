@@ -13,6 +13,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 class KafkaClusterPropertiesTest {
 
     @Test
+    void idempotencyIsEnabledByDefault() {
+        KafkaClusterProperties props = new KafkaClusterProperties();
+
+        assertThat(props.isIdempotencyEnabled()).isTrue();
+    }
+
+    @Test
+    void idempotencyCanBeDisabledViaFlag() {
+        KafkaClusterProperties props = new KafkaClusterProperties();
+        props.getIdempotency().setEnabled(false);
+
+        assertThat(props.isIdempotencyEnabled()).isFalse();
+    }
+
+    @Test
     void effectiveEnvironmentMergesDefaultsBelowClusterOverrides() {
         KafkaClusterProperties props = new KafkaClusterProperties();
         props.setDefaultEnvironment(nested(
