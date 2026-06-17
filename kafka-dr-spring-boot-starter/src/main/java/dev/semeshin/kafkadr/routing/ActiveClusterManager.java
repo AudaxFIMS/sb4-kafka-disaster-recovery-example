@@ -228,6 +228,16 @@ public class ActiveClusterManager {
         return activeCluster;
     }
 
+    /**
+     * True if at least one cluster is currently marked healthy. Producers consult
+     * this before sending: with no healthy cluster, a real send would only block
+     * on the binder's topic provisioning / metadata lookup (max.block.ms) against
+     * dead brokers, so the producer fails fast instead.
+     */
+    public boolean hasHealthyCluster() {
+        return healthStatus.containsValue(true);
+    }
+
     public List<String> getClustersByPriority() {
         return clustersByPriority;
     }

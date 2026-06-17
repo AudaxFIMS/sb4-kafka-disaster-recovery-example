@@ -113,6 +113,21 @@ public class ResilientProducer {
     }
 
     private SendResult doSend(String topic, Message<?> message, String messageId) {
+        if (bindingByTopic.get(topic) == null) {
+            throw new IllegalArgumentException(
+                    "No producer configured for topic '" + topic + "'. " +
+                            "Add an entry under kafka-dr.producers");
+        }
+
+        // Fast-fail when no cluster is healthy (e.g. all clusters were down at
+        // startup). Otherwise streamBridge.send() would trigger lazy binding
+        // creation, and KafkaTopicProvisioner would block on metadata lookups
+        // against dead brokers (max.block.ms) instead of returning a clean failure.
+        if (!clusterManager.hasHealthyCluster()) {
+            log.error("[{}] No healthy cluster available, skipping send: messageId={}", topic, messageId);
+            return new SendResult(false, null, messageId);
+        }
+
         Set<String> triedClusters = new HashSet<>();
 
         while (triedClusters.size() < clusterManager.getClustersByPriority().size()) {

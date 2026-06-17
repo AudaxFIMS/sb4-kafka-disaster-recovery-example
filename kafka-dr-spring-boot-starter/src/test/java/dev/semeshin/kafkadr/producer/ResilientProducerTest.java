@@ -42,6 +42,7 @@ class ResilientProducerTest {
         properties.setProducers(Map.of("order-events-producer", orderProducer));
 
         when(clusterManager.getClustersByPriority()).thenReturn(List.of("primary", "secondary"));
+        when(clusterManager.hasHealthyCluster()).thenReturn(true);
     }
 
     @Test
@@ -141,6 +142,34 @@ class ResilientProducerTest {
 
         assertThat(result.success()).isFalse();
         verify(clusterManager).forceUnhealthy("primary");
+    }
+
+    @Test
+    void noHealthyClusterSkipsSendAndFailsFast() {
+        // Reproduces "no active cluster at startup": a send must not reach
+        // streamBridge (and thus KafkaTopicProvisioner) when nothing is healthy.
+        when(clusterManager.hasHealthyCluster()).thenReturn(false);
+
+        ResilientProducer producer = new ResilientProducer(streamBridge, clusterManager, properties);
+        ResilientProducer.SendResult result = producer.send("order-events", "payload", "k-1");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.cluster()).isNull();
+        assertThat(result.messageId()).isEqualTo("k-1");
+        verify(streamBridge, times(0)).send(anyString(), anyString(), any(Message.class));
+        verify(clusterManager, times(0)).getActiveCluster();
+    }
+
+    @Test
+    void unknownTopicFailsFastEvenWithNoHealthyCluster() {
+        when(clusterManager.hasHealthyCluster()).thenReturn(false);
+
+        ResilientProducer producer = new ResilientProducer(streamBridge, clusterManager, properties);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> producer.send("unconfigured-topic", "payload", "k-1"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("No producer configured for topic");
     }
 
     @Test

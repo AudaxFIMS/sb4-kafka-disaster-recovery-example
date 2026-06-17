@@ -51,6 +51,18 @@ class ActiveClusterManagerTest {
     }
 
     @Test
+    void hasHealthyClusterIsFalseUntilAClusterReportsHealthy() {
+        KafkaClusterProperties props = threeClusters();
+        ActiveClusterManager mgr = new ActiveClusterManager(props, publisher, new InMemoryFailoverStateStore());
+
+        // All clusters start unhealthy (e.g. nothing reachable at startup)
+        assertThat(mgr.hasHealthyCluster()).isFalse();
+
+        mgr.reportHealth("secondary", true);
+        assertThat(mgr.hasHealthyCluster()).isTrue();
+    }
+
+    @Test
     void firstHealthyClusterIsElectedImmediatelyOnInitialReport() {
         KafkaClusterProperties props = threeClusters();
         ActiveClusterManager mgr = new ActiveClusterManager(props, publisher, new InMemoryFailoverStateStore());
