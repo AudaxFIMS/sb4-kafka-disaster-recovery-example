@@ -88,6 +88,26 @@ class ClusterHealthCheckerTest {
     }
 
     @Test
+    void allClustersAreProbedAndReported() {
+        ClusterConfig secondary = new ClusterConfig();
+        secondary.setBootstrapServers("kafka-secondary:9092");
+        secondary.setPriority(2);
+        Map<String, ClusterConfig> clusters = new LinkedHashMap<>();
+        clusters.put("primary", props.getClusters().get("primary"));
+        clusters.put("secondary", secondary);
+        props.setClusters(clusters);
+
+        DescribeClusterResult cluster = mock(DescribeClusterResult.class);
+        when(adminClient.describeCluster()).thenReturn(cluster);
+        when(cluster.clusterId()).thenReturn(KafkaFuture.completedFuture("cid"));
+
+        new ClusterHealthChecker(props, mgr, factory).checkAllClusters();
+
+        verify(mgr).reportHealth("primary", true);
+        verify(mgr).reportHealth("secondary", true);
+    }
+
+    @Test
     void basicProbeReportsUnhealthyOnException() {
         DescribeClusterResult cluster = mock(DescribeClusterResult.class);
         when(adminClient.describeCluster()).thenReturn(cluster);

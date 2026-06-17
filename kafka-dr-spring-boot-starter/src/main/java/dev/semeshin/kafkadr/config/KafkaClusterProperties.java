@@ -196,8 +196,8 @@ public class KafkaClusterProperties {
 
     public static class HealthCheckConfig {
         private long intervalMs = 5000;
-        private long timeoutMs = 3000;
-        private int failureThreshold = 3;
+        private long timeoutMs = 2000;
+        private int failureThreshold = 2;
         private int recoveryThreshold = 3;
 
         /**

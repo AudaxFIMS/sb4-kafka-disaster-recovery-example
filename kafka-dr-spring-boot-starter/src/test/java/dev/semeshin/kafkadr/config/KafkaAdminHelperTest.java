@@ -199,6 +199,25 @@ class KafkaAdminHelperTest {
         assertThat(result).isSameAs(adminClient);
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void createAdminClientBoundsSocketConnectionSetupByTimeout() {
+        KafkaAdminHelper.createAdminClient("kafka:9092", 1500, Map.of("security.protocol", "SSL"));
+
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        adminClientStatic.verify(() -> AdminClient.create(captor.capture()));
+        Map<String, Object> config = captor.getValue();
+
+        // The bug: this overload omitted socket.connection.setup.timeout.ms, so an
+        // unreachable broker blocked on Kafka's 10s default instead of timeout-ms.
+        assertThat(config)
+                .containsEntry("request.timeout.ms", 1500)
+                .containsEntry("default.api.timeout.ms", 1500)
+                .containsEntry("socket.connection.setup.timeout.ms", 1500L)
+                .containsEntry("socket.connection.setup.timeout.max.ms", 1500L)
+                .containsEntry("security.protocol", "SSL");
+    }
+
     private void stubDescribeCluster(String clusterId) {
         DescribeClusterResult cluster = mock(DescribeClusterResult.class);
         when(adminClient.describeCluster()).thenReturn(cluster);

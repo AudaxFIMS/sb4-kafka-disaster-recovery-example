@@ -727,14 +727,16 @@ kafka-dr:
 ```yaml
 kafka-dr:
   health-check:
-    interval-ms: 5000       # How often to probe each cluster
-    timeout-ms: 3000         # AdminClient timeout per probe
-    failure-threshold: 3     # Consecutive failures → unhealthy (also retry count for send errors)
-    recovery-threshold: 3    # Consecutive successes → healthy
+    interval-ms: 5000       # How often to probe each cluster (wall-clock, fixed rate)
+    timeout-ms: 2000         # AdminClient timeout per probe (default: 2000)
+    failure-threshold: 2     # Consecutive failures → unhealthy (default: 2; also retry count for send errors)
+    recovery-threshold: 3    # Consecutive successes → healthy (default: 3)
     deep-probe: true         # default: false
     deep-probe-min-nodes: 2  # min unique active leader nodes (default: 1)
     deep-probe-min-isr: 2    # min in-sync replicas per partition (default: 0 — disabled)
 ```
+
+**Time to fail over** ≈ `failure-threshold × interval-ms` + the binding switch. With the defaults that is `2 × 5000ms` ≈ **10 s**. Lower `failure-threshold` to 1 for the fastest reaction (at the cost of reacting to transient blips), or raise it to debounce flapping clusters. The probe cadence is wall-clock (`fixedRate`): probes for all clusters run **in parallel**, each bounded by `timeout-ms` (the bound covers the initial socket connection setup too), so a slow or unreachable cluster never stretches the interval or delays the other clusters' probes. `recovery-threshold` is intentionally higher than `failure-threshold` — leave a failed cluster quickly, return to it cautiously.
 
 **Health check modes:**
 

@@ -11,6 +11,7 @@ import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartitionInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import jakarta.annotation.PreDestroy;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;
@@ -18,6 +19,9 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -31,6 +35,7 @@ public class ClusterHealthChecker implements HealthIndicator {
     private final KafkaClusterProperties properties;
     private final ActiveClusterManager clusterManager;
     private final AdminClientFactory adminClientFactory;
+    private final ExecutorService probeExecutor;
 
     public ClusterHealthChecker(KafkaClusterProperties properties,
                                 ActiveClusterManager clusterManager,
@@ -38,26 +43,56 @@ public class ClusterHealthChecker implements HealthIndicator {
         this.properties = properties;
         this.clusterManager = clusterManager;
         this.adminClientFactory = adminClientFactory;
+        // One thread per cluster so a slow/unreachable cluster never delays the others.
+        int poolSize = Math.max(1, properties.getClusters().size());
+        this.probeExecutor = Executors.newFixedThreadPool(poolSize, r -> {
+            Thread t = new Thread(r, "kafka-dr-health-probe");
+            t.setDaemon(true);
+            return t;
+        });
     }
 
-    @Scheduled(fixedDelayString = "${kafka-dr.health-check.interval-ms:5000}")
+    @PreDestroy
+    public void shutdown() {
+        probeExecutor.shutdownNow();
+    }
+
+    /**
+     * Uses fixedRate (not fixedDelay) so the cadence is wall-clock — the interval is
+     * not stretched by how long the probes take. Probes run in parallel and each is
+     * bounded by timeout-ms, so a full round can't exceed roughly that bound.
+     */
+    @Scheduled(fixedRateString = "${kafka-dr.health-check.interval-ms:5000}")
     public void checkAllClusters() {
         long timeout = properties.getHealthCheck().getTimeoutMs();
         boolean deepProbe = properties.getHealthCheck().isDeepProbe();
 
+        // Hard ceiling on how long we wait for a probe result. The deep probe issues up
+        // to three sequential admin calls, each bounded by timeout; basic probe just one.
+        long awaitMs = (deepProbe ? timeout * 3 : timeout) + 2000;
+
+        Map<String, Future<Boolean>> inFlight = new LinkedHashMap<>();
         for (Map.Entry<String, ClusterConfig> entry : properties.getClusters().entrySet()) {
             String name = entry.getKey();
             String brokers = entry.getValue().getBootstrapServers();
             Map<String, String> kafkaClientProps = KafkaAdminHelper.extractKafkaClientProperties(
                     properties.getEffectiveEnvironment(name));
 
-            boolean healthy;
-            if (deepProbe) {
-                healthy = probeDeep(name, brokers, timeout, kafkaClientProps);
-            } else {
-                healthy = probeAdmin(brokers, timeout, kafkaClientProps);
-            }
+            inFlight.put(name, probeExecutor.submit(() -> deepProbe
+                    ? probeDeep(name, brokers, timeout, kafkaClientProps)
+                    : probeAdmin(brokers, timeout, kafkaClientProps)));
+        }
 
+        for (Map.Entry<String, Future<Boolean>> entry : inFlight.entrySet()) {
+            String name = entry.getKey();
+            boolean healthy;
+            try {
+                healthy = entry.getValue().get(awaitMs, TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                entry.getValue().cancel(true);
+                log.debug("[{}] Health probe did not complete within {}ms: {}", name, awaitMs, e.getMessage());
+                healthy = false;
+            }
             clusterManager.reportHealth(name, healthy);
         }
     }

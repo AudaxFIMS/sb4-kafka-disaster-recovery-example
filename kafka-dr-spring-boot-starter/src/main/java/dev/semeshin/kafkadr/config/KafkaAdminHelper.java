@@ -116,6 +116,11 @@ public final class KafkaAdminHelper {
         config.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, brokers);
         config.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, timeoutMs);
         config.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, timeoutMs);
+        // Bound the initial socket connection setup too — otherwise an unreachable
+        // host (dropped SYN) falls back to Kafka's 10s default, so describeCluster()
+        // and the subsequent close() block far longer than timeoutMs.
+        config.put(AdminClientConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG, (long) timeoutMs);
+        config.put(AdminClientConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG, (long) timeoutMs);
         return AdminClient.create(config);
     }
 }
