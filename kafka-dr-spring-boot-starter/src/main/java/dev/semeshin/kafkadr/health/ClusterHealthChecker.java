@@ -46,7 +46,8 @@ public class ClusterHealthChecker implements HealthIndicator {
         // One thread per cluster so a slow/unreachable cluster never delays the others.
         int poolSize = Math.max(1, properties.getClusters().size());
         this.probeExecutor = Executors.newFixedThreadPool(poolSize, r -> {
-            Thread t = new Thread(r, "kafka-dr-health-probe");
+            Thread t = new Thread(r);
+			t.setName("kafka-dr-health-probe-" + t.getId());
             t.setDaemon(true);
             return t;
         });

@@ -291,7 +291,7 @@ Optionally provide a custom `IdempotencyStore`:
 @Component
 public class MyIdempotencyStore implements IdempotencyStore {
     @Override
-    public boolean tryProcess(String consumerName, String messageId) {
+    public boolean tryProcess(String clusterName, String consumerName, Message<?> message) {
         // your deduplication logic (database, Redis, etc.)
     }
 }
@@ -911,7 +911,7 @@ The default `extractKey` uses the Kafka record key (`KafkaHeaders.RECEIVED_KEY`,
 @Component
 public class MyIdempotencyStore implements IdempotencyStore {
     @Override
-    public boolean tryProcess(String consumerName, Message<?> message) {
+    public boolean tryProcess(String clusterName, String consumerName, Message<?> message) {
         String key = extractKey(consumerName, message);   // default Kafka-key logic, or override it
         return markAsProcessedIfFirstTime(consumerName, key);
     }
@@ -920,7 +920,7 @@ public class MyIdempotencyStore implements IdempotencyStore {
 
 The static helper `IdempotencyStore.kafkaKey(message, customKeyHeader)` exposes the default key-based extraction (including custom-header support) for reuse. The example app includes `RedisIdempotencyStore` built on it.
 
-> **Migration note:** the SPI changed from `tryProcess(String consumerName, String messageId)` to `tryProcess(String consumerName, Message<?> message)`. Key extraction moved from `IdempotentConsumer` into the store: existing key-based implementations should call `extractKey(consumerName, message)` (or the static `IdempotencyStore.kafkaKey(message, keyHeader)`) and handle the `null` (no key) case by returning `true`.
+> **Migration note:** the SPI changed from `tryProcess(String consumerName, String messageId)` to `tryProcess(String clusterName, String consumerName, Message<?> message)`. Key extraction moved from `IdempotentConsumer` into the store: existing key-based implementations should call `extractKey(consumerName, message)` (or the static `IdempotencyStore.kafkaKey(message, keyHeader)`) and handle the `null` (no key) case by returning `true`.
 
 ## Adding Business Logic
 
