@@ -60,6 +60,8 @@ public class MessageHandlerRegistry {
     private final Map<String, HandlerRef> refs = new HashMap<>();
     private final Map<String, ConsumerConfig> consumers = new HashMap<>();
     private final ObjectMapper objectMapper = new ObjectMapper();
+    /** Diagnostic logging switch — see {@code kafka-dr.debug.enable}. */
+    private final boolean debugEnabled;
 
     private final Consumer<Message<?>> defaultHandler = msg -> {
         if (BatchMessages.isBatch(msg)) {
@@ -71,6 +73,7 @@ public class MessageHandlerRegistry {
 
     public MessageHandlerRegistry(List<MessageProcessor> processors,
                                   KafkaClusterProperties properties) {
+        this.debugEnabled = properties.getDebug().isEnable();
         for (ConsumerConfig consumer : properties.getConsumers().values()) {
             String consumerName = consumer.getName();
             consumers.put(consumerName, consumer);
@@ -101,8 +104,16 @@ public class MessageHandlerRegistry {
     }
 
     /**
-     * Per-record invoker, used without batching and by the split-mode consumer when the
-     * handler takes one record at a time.
+     * Per-record invoker used by the non-batch consumer. Split mode does not come through
+     * here — it drives the same handler through {@link #getBatchHandler}, which reports
+     * failures through {@link BatchHandler.Result} instead of throwing.
+     *
+     * <p>A failing handler propagates, exactly as on the batch paths. Swallowing it here
+     * would mark the record processed in the {@code IdempotencyStore}, advance the
+     * seek-by-timestamp watermark and commit the offset for a record that was never
+     * handled — and the redelivery Kafka performs would then be dropped as a duplicate.
+     * Bound the redelivery with the binding's {@code max-attempts} / {@code enable-dlq},
+     * or catch inside the handler where a failure really is not worth a retry.
      */
     public Consumer<Message<?>> getHandler(String consumerName) {
         HandlerRef ref = refs.get(consumerName);
@@ -114,10 +125,17 @@ public class MessageHandlerRegistry {
         return msg -> {
             try {
                 invoke(ref, convertPayload(msg, ref.elementType(), contentType));
-            } catch (Exception e) {
-                // Preserved behaviour on the record path: the exception is reported and the
-                // offset moves on. The batch paths below deliberately do not do this.
-                log.error("[{}] Handler '{}' failed: {}", consumerName, ref.method().getName(), e.getMessage(), e);
+            } catch (RuntimeException e) {
+                // Logged with the consumer name the container's error handler does not know,
+                // then propagated so the caller can roll back and let Kafka redeliver.
+                if (debugEnabled) {
+                    log.error("[{}] Handler '{}' failed, propagating: {}",
+                            consumerName, ref.method().getName(), e.getClass().getSimpleName(), e);
+                } else {
+                    log.error("[{}] Handler '{}' failed, propagating: {} - {}",
+                            consumerName, ref.method().getName(), e.getClass().getSimpleName(), e.getMessage());
+                }
+                throw e;
             }
         };
     }

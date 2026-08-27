@@ -232,6 +232,29 @@ kafka-dr-example-mixed-batch/              # Example: batch and record consumers
   src/main/resources/
     application.yml                        # One batching consumer, one not
 
+kafka-dr-example-integration-flow/         # Example: Spring Integration flows around the DR chain
+  src/main/java/dev/semeshin/kafkadr/
+    IntegrationFlowExampleApp.java         # Entry point (@IntegrationComponentScan for the gateway)
+    model/
+      OrderEvent.java                      # Flow input
+      Invoice.java                         # Flow output, published through ResilientProducer
+      UnprocessableOrderException.java     # Maps to a discard verdict in the batch path
+    flow/
+      OrderFlowConfig.java                 # Two DirectChannel flows: record path and billing path
+      BillingGateway.java                  # Request/reply entry, unwraps exceptions for typed catches
+      FlowMetrics.java                     # Counters surfaced by /api/status
+    handler/
+      OrderFlowProcessor.java              # Record handler: forwards into the flow, catches nothing
+      BillingBatchProcessor.java           # Batch handler: gateway per record, one sendBatch at the end
+      InvoiceProcessor.java                # Plain consumer of what the flows published
+    controller/
+      FlowController.java                  # REST API: feed both paths, read the counters
+  src/test/java/.../
+    IntegrationFlowConfigurationTest.java  # Asserts the shipped YAML resolves to the intended shapes
+    OrderFlowTest.java                     # Same-thread execution, propagation, gateway unwrapping
+  src/main/resources/
+    application.yml                        # Record consumer + batch consumer + invoices consumer
+
 docker-compose.yml                         # 3 single-node Kafka + MirrorMaker 2 + Schema Registry + Redis
 docker-compose-multinode.yml               # 2 clusters × 3 nodes + MirrorMaker 2 + Schema Registry + Redis
 mm2/
@@ -449,6 +472,56 @@ secondary, and `clusters` in the response lists both.
 docker stop kafka-primary
 curl -X POST 'localhost:8083/api/orders?count=50'
 ```
+
+### Example: Spring Integration Flows (`kafka-dr-example-integration-flow`)
+
+Spring Cloud Stream is built on Spring Integration, so a flow needs no bridge — only the right
+position. This example puts one in each of the two places that keep every DR guarantee intact:
+**behind the handler** and **in front of the producer**.
+
+```bash
+# 1. Infrastructure (two clusters are enough)
+docker-compose up -d kafka-primary kafka-secondary
+
+# 2. Build the starter
+cd kafka-dr-spring-boot-starter && mvn clean install -DskipTests
+
+# 3. Run
+cd ../kafka-dr-example-integration-flow && mvn clean spring-boot:run
+```
+
+```bash
+# Record path: handler → DirectChannel → filter → transform → ResilientProducer
+curl -X POST 'localhost:8084/api/orders?count=5&amount=100'
+
+# amount=0 is filtered out inside the flow — consumed deliberately, no invoice, no failure
+curl -X POST 'localhost:8084/api/orders?count=3&amount=0'
+
+# Batch path: one gateway call per record, one sendBatch for the invoices
+curl -X POST 'localhost:8084/api/billing?count=10&amount=100'
+
+# A negative amount is discarded through the typed catch the gateway makes possible
+curl -X POST 'localhost:8084/api/billing?count=4&amount=-1'
+
+# Counters for both paths and the round trip back through Kafka
+curl -s localhost:8084/api/status | jq
+```
+
+What the module encodes, and why:
+
+| Choice | Reason |
+|---|---|
+| Every channel is a `DirectChannel` | The flow runs on the calling thread. A queue or executor channel would let the offset commit and the watermark advance while the message is still queued. |
+| No `errorChannel`, no catching in the handler | A thrown exception is the starter's only signal that the record was not processed — it rolls back the idempotency mark and lets Kafka redeliver. |
+| The batch path calls a **gateway**, not `channel.send()` | A gateway rethrows the original exception, so `catch (UnprocessableOrderException e)` matches and the record is discarded. `send()` wraps it in a `MessagingException` and the typed catch would miss. |
+| The billing flow has **no filter** | It is request/reply: a filtered-out message produces no reply at all, and the call would block until `replyTimeout`. Records that must not be billed are rejected before the gateway. |
+| The loop over the batch lives in the handler, not in a `.split()` | `BatchOutcome` is indexed; splitting inside the flow loses each record's position and with it the commit prefix. |
+| The tail is `ResilientProducer`, never `Kafka.outboundChannelAdapter` | The adapter is bound to one `ProducerFactory` and would keep writing to a dead cluster after a failover. |
+| `max-attempts: 1` on the record consumer | Handler failures propagate now, so the retry chain is chosen deliberately instead of inherited. |
+
+`OrderFlowTest` pins these properties against a real Integration context rather than leaving them
+as comments: same-thread execution, propagation out of the flow, filtering as a success, and the
+gateway-versus-send difference in exception types.
 
 ### Example: Restart-Safe `failback-after` (Redis-backed `FailoverStateStore`)
 
@@ -745,6 +818,52 @@ kafka-dr:
 | `json` | `byte[]` → POJO via Jackson (default) | JSON payloads |
 | `native` | No conversion; Kafka deserializer handles it | Avro, Protobuf |
 | `bytes` | No conversion; raw `byte[]` | Binary data |
+
+#### Handler failures
+
+A handler that throws on the record path **propagates**, exactly as on the batch paths. The
+starter rolls back the idempotency mark, leaves the seek-by-timestamp watermark where it was,
+and lets the exception reach the listener container so Kafka redelivers the record.
+
+Swallowing it — which is what the starter did before — meant the record was marked processed,
+the watermark advanced and the offset was committed for a record the handler never handled;
+the redelivery Kafka performs was then dropped as a duplicate. Silent loss, visible only as one
+ERROR line.
+
+What this changes in practice:
+
+| | Before | Now |
+|---|---|---|
+| Idempotency mark | Kept — redelivery looks like a duplicate | Rolled back, redelivery is processed |
+| Watermark (`seek-by-timestamp`) | Advanced past the failed record | Stays put, so a failover replays from it |
+| Offset | Committed | Redelivered, then handled by the retry chain |
+
+The retry chain is Spring's, not the starter's: the binding retries `max-attempts` times
+(default **3**), and if the exception still escapes, the container's error handler delivers the
+record up to **10** times before logging it and moving on. Bound it deliberately for topics that
+can carry poison payloads:
+
+```yaml
+kafka-dr:
+  consumers:
+    order-events-consumer:
+      topic: order-events
+      group: my-group
+      handler: processOrder
+      properties:
+        max-attempts: 1        # no in-binding retry, straight to the error handler
+        enable-dlq: true       # poison records land in <topic>.DLQ instead of being logged away
+```
+
+Where a failure genuinely is not worth a redelivery — an unprocessable payload, a business
+rule that rejects the record — catch it inside the handler. That is now an explicit decision
+rather than the default.
+
+> **A note on `content-type: json`.** Record-mode conversion stays lenient: a payload that
+> does not parse is handed to the handler as its raw `String`. With a handler typed
+> `Message<OrderEvent>` that surfaces as a `ClassCastException` — which now propagates instead
+> of being logged away. `ErrorHandlingDeserializer` (below) is unaffected: those records never
+> reach the handler at all.
 
 #### Skipping malformed messages (`ErrorHandlingDeserializer`)
 
