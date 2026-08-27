@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 /**
@@ -45,15 +46,22 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
 
         log.info("[{}][{}] Processing: key={}", clusterName, consumerName, IdempotencyStore.kafkaKey(msg, null));
 
-        delegate.accept(msg);
+        try {
+            delegate.accept(msg);
+        } catch (RuntimeException e) {
+            // The message was marked as processed before the handler ran. If the handler
+            // failed, the mark has to go away or a redelivery would be dropped as a duplicate.
+            idempotencyStore.rollback(clusterName, consumerName, List.of(msg));
+            throw e;
+        }
         trackTimestamp(msg);
     }
 
     private void trackTimestamp(Message<?> msg) {
         if (timestampTracker == null) return;
-        Long timestamp = msg.getHeaders().get(KafkaHeaders.RECEIVED_TIMESTAMP, Long.class);
-        if (timestamp != null) {
-            timestampTracker.update(consumerName, timestamp);
+        if (!timestampTracker.advance(msg)) {
+            log.debug("[{}][{}] Missing topic/partition/timestamp headers, watermark not advanced",
+                    clusterName, consumerName);
         }
     }
 }

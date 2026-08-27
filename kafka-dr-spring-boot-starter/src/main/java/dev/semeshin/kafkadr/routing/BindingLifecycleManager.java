@@ -30,6 +30,8 @@ public class BindingLifecycleManager {
     private final LateBindingInitializer lateBindingInitializer;
     private final Map<String, List<String>> inputBindingsByCluster;
     private final Set<String> startupClusters;
+    /** Diagnostic logging switch — see {@code kafka-dr.debug.enable}. */
+    private final boolean debugEnabled;
 
     public BindingLifecycleManager(BindingsLifecycleController bindingsController,
                                    StreamBridge streamBridge,
@@ -40,6 +42,7 @@ public class BindingLifecycleManager {
         this.streamBridge = streamBridge;
         this.startupState = startupState;
         this.lateBindingInitializer = lateBindingInitializer;
+        this.debugEnabled = properties.getDebug().isEnable();
         this.startupClusters = Set.copyOf(startupState.getInitializedClusters());
         this.inputBindingsByCluster = buildInputBindingIndex(properties);
         log.info("Input bindings by cluster: {}", inputBindingsByCluster);
@@ -65,7 +68,11 @@ public class BindingLifecycleManager {
                     bindingsController.changeState(binding, State.STOPPED);
                     log.info("[{}] Stopped binding: {}", cluster, binding);
                 } catch (Exception e) {
-                    log.error("[{}] Failed to stop binding '{}': {}", cluster, binding, e.getMessage());
+                    if (debugEnabled) {
+                        log.error("[{}] Failed to stop binding '{}'", cluster, binding, e);
+                    } else {
+                        log.error("[{}] Failed to stop binding '{}': {}", cluster, binding, e.getMessage());
+                    }
                 }
             }
         } else if (startupState.isInitialized(cluster)) {
@@ -87,7 +94,11 @@ public class BindingLifecycleManager {
                     bindingsController.changeState(binding, State.STARTED);
                     log.info("[{}] Started binding: {}", cluster, binding);
                 } catch (Exception e) {
-                    log.error("[{}] Failed to start binding '{}': {}", cluster, binding, e.getMessage());
+                    if (debugEnabled) {
+                        log.error("[{}] Failed to start binding '{}'", cluster, binding, e);
+                    } else {
+                        log.error("[{}] Failed to start binding '{}': {}", cluster, binding, e.getMessage());
+                    }
                 }
             }
         } else {
@@ -118,7 +129,11 @@ public class BindingLifecycleManager {
         } catch (NoSuchFieldException e) {
             log.warn("StreamBridge.channelCache field not found — producer cache cleanup skipped.");
         } catch (Exception e) {
-            log.error("[{}] Failed to clear producer cache: {}", cluster, e.getMessage());
+            if (debugEnabled) {
+                log.error("[{}] Failed to clear producer cache", cluster, e);
+            } else {
+                log.error("[{}] Failed to clear producer cache: {}", cluster, e.getMessage());
+            }
         }
     }
 

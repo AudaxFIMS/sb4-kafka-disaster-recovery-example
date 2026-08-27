@@ -1,5 +1,7 @@
 package dev.semeshin.kafkadr.config;
 
+import dev.semeshin.kafkadr.consumer.BatchIdempotentConsumer;
+import dev.semeshin.kafkadr.consumer.BatchPassThroughConsumer;
 import dev.semeshin.kafkadr.consumer.IdempotentConsumer;
 import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.consumer.MessageHandlerRegistry;
@@ -15,6 +17,7 @@ import org.springframework.context.EnvironmentAware;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.MapPropertySource;
+import org.springframework.messaging.Message;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -29,6 +32,10 @@ import java.util.function.Consumer;
 public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProcessor, EnvironmentAware {
 
     private static final Logger log = LoggerFactory.getLogger(DynamicBindingRegistrar.class);
+
+    /** Binder-side lazy topic creation; the starter provisions topics itself instead. */
+    private static final String BINDER_AUTO_CREATE_TOPICS =
+            "spring.cloud.stream.kafka.binder.auto-create-topics";
 
     private ConfigurableEnvironment environment;
 
@@ -58,6 +65,11 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
         if (registry.containsBeanDefinition("kafkaAdmin")) {
             registry.removeBeanDefinition("kafkaAdmin");
         }
+
+        // Static utility, so the flag has to be pushed in — and before the first probe.
+        KafkaAdminHelper.setDebugEnabled(props.getDebug().isEnable());
+
+        ConsumerConfigValidator.validate(props);
 
         Set<String> reachableClusters = probeAllClusters(props);
         log.info("Reachable clusters at startup: {}", reachableClusters);
@@ -98,6 +110,12 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
         generated.put("kafka-dr.internal.initialized-clusters", String.join(",", reachableClusters));
     }
 
+    private static void putIfNotNull(Map<String, Object> generated, String key, Object value) {
+        if (value != null) {
+            generated.put(key, value.toString());
+        }
+    }
+
     private Set<String> probeAllClusters(KafkaClusterProperties props) {
         Set<String> reachable = new LinkedHashSet<>();
         for (String name : props.getClusters().keySet()) {
@@ -119,6 +137,17 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
             generated.put(binderPrefix + ".type", "kafka");
             generated.put(envPrefix + ".spring.cloud.stream.kafka.binder.brokers",
                     entry.getValue().getBootstrapServers());
+
+            // Lazy topic creation by the binder is off by default, because the starter
+            // provisions topics itself: kafka-dr.auto-create-topics reaches every cluster,
+            // including the standby ones that have no bindings and would otherwise get
+            // their topics only at failover. Lazy creation also drags in
+            // KafkaTopicProvisioner, which blocks on metadata lookups against dead brokers
+            // (max.block.ms) instead of failing cleanly on send.
+            //
+            // Written before the configured environment so an explicit
+            // default-environment / per-cluster value still wins.
+            generated.put(envPrefix + "." + BINDER_AUTO_CREATE_TOPICS, "false");
 
             for (Map.Entry<String, String> envEntry : props.getEffectiveEnvironment(clusterName).entrySet()) {
                 generated.put(envPrefix + "." + envEntry.getKey(), envEntry.getValue());
@@ -150,9 +179,24 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                     generated.put(prefix + ".consumer.use-native-decoding", "true");
                 }
 
+                String corePrefix = prefix + ".consumer";
                 String kafkaPrefix = "spring.cloud.stream.kafka.bindings." + bindingName + ".consumer";
+
+                // Batch settings are written before the user's properties so that an
+                // explicit configuration.max.poll.records still wins.
+                KafkaClusterProperties.BatchConfig batch = consumer.getBatch();
+                if (batch.isEnabled()) {
+                    generated.put(corePrefix + ".batch-mode", "true");
+                    putIfNotNull(generated, kafkaPrefix + ".configuration.max.poll.records", batch.getMaxRecords());
+                    putIfNotNull(generated, kafkaPrefix + ".configuration.fetch.min.bytes", batch.getMinBytes());
+                    putIfNotNull(generated, kafkaPrefix + ".configuration.fetch.max.wait.ms", batch.getMaxWaitMs());
+                }
+
                 for (Map.Entry<String, String> prop : props.getEffectiveConsumerProperties(consumer).entrySet()) {
-                    generated.put(kafkaPrefix + "." + prop.getKey(), prop.getValue());
+                    BindingPropertyRouter.checkNotReserved(prop.getKey(), consumerName, false);
+                    String target = BindingPropertyRouter.forConsumerKey(prop.getKey(), consumerName)
+                            == BindingPropertyRouter.Namespace.CORE ? corePrefix : kafkaPrefix;
+                    generated.put(target + "." + prop.getKey(), prop.getValue());
                 }
             }
         }
@@ -175,8 +219,9 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
 
     private void generateProducerBindings(KafkaClusterProperties props, Map<String, Object> generated) {
         for (KafkaClusterProperties.ProducerConfig producer : props.getProducers().values()) {
+            String producerName = producer.getName();
             String topic = producer.getTopic();
-            String bindingName = KafkaClusterProperties.producerBindingName(producer.getName());
+            String bindingName = KafkaClusterProperties.producerBindingName(producerName);
 
             for (String outBinding : List.of(bindingName, bindingName + "-out-0")) {
                 String prefix = "spring.cloud.stream.bindings." + outBinding;
@@ -186,9 +231,14 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                     generated.put(prefix + ".producer.use-native-encoding", "true");
                 }
 
+                String corePrefix = prefix + ".producer";
                 String kafkaPrefix = "spring.cloud.stream.kafka.bindings." + outBinding + ".producer";
+
                 for (Map.Entry<String, String> prop : props.getEffectiveProducerProperties(producer).entrySet()) {
-                    generated.put(kafkaPrefix + "." + prop.getKey(), prop.getValue());
+                    BindingPropertyRouter.checkNotReserved(prop.getKey(), producerName, true);
+                    String target = BindingPropertyRouter.forProducerKey(prop.getKey(), producerName)
+                            == BindingPropertyRouter.Namespace.CORE ? corePrefix : kafkaPrefix;
+                    generated.put(target + "." + prop.getKey(), prop.getValue());
                 }
             }
         }
@@ -209,13 +259,23 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                 beanDef.setInstanceSupplier(() -> {
                     // Master switch: with idempotency disabled the store bean is never
                     // looked up, so even a user-defined store (e.g. Redis) is ignored.
-                    IdempotencyStore store = props.isIdempotencyEnabled()
+                    IdempotencyStore store = props.isIdempotencyEnabled(consumer)
                             ? beanFactory.getBean(IdempotencyStore.class)
                             : IdempotencyStore.DISABLED;
                     MessageHandlerRegistry handlerRegistry = beanFactory.getBean(MessageHandlerRegistry.class);
                     LastProcessedTimestampTracker tracker = beanFactory.getBean(LastProcessedTimestampTracker.class);
-                    return new IdempotentConsumer(consumerName, cluster, store,
-                            handlerRegistry.getHandler(consumerName), tracker);
+                    KafkaClusterProperties.BatchConfig batch = consumer.getBatch();
+                    if (!batch.isEnabled()) {
+                        return new IdempotentConsumer(consumerName, cluster, store,
+                                handlerRegistry.getHandler(consumerName), tracker);
+                    }
+                    if (batch.getMode() == KafkaClusterProperties.BatchConfig.Mode.STANDARD) {
+                        return new BatchPassThroughConsumer(consumerName, cluster,
+                                handlerRegistry.getEnvelopeHandler(consumerName), tracker);
+                    }
+                    return new BatchIdempotentConsumer(consumerName, cluster, store,
+                            handlerRegistry.getBatchHandler(consumerName), tracker,
+                            props.resolveAckMode(consumer));
                 });
 
                 registry.registerBeanDefinition(beanName, beanDef);

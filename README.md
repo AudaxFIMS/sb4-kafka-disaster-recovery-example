@@ -107,6 +107,9 @@ The project is structured as a multi-module Maven build:
 - **Consumer binding management** — only the active cluster's consumers are running; others are stopped
 - **Producer cache cleanup** — dead cluster producers are closed to prevent reconnect noise
 - **Idempotent message processing** — pluggable deduplication via `IdempotencyStore` interface; the store receives the full message, so custom implementations can dedup by any header or payload data (in-memory key-based default, Redis example included)
+- **Batch consumption** — per-consumer `batch.enabled`; the starter unpacks the batch so existing `Message<T>` handlers, deduplication and timestamp watermarks keep working unchanged, or hands over the raw envelope in standard Spring Cloud Stream form
+- **Manual acknowledgment in batch mode** — the starter owns the commit: it acknowledges the successful prefix, releases idempotency marks for the rest, and only then advances the watermark, so seek-by-timestamp never passes an uncommitted offset
+- **Batch producer** — `sendBatch()` makes one failover decision for the whole batch and moves only the unsent tail to the next cluster
 - **Poison-pill protection** — wrap any deserializer in `ErrorHandlingDeserializer` via per-consumer `properties.configuration`; malformed messages are logged and skipped (or sent to a DLQ) without reaching your handler
 - **Restart-safe failback gate** — pluggable `FailoverStateStore` persists which cluster the app is pinned to after a failover plus the failover timestamp; `failback-after` is honored across restarts (in-memory default, Redis example included)
 - **Multi-format support** — String, JSON, Avro, and raw bytes payloads with per-topic configuration
@@ -129,12 +132,20 @@ kafka-dr-spring-boot-starter/             # Framework (reusable JAR)
       KafkaClusterProperties.java          # Configuration model
       KafkaAdminHelper.java                # Shared AdminClient utilities
       DynamicBindingRegistrar.java         # Generates binders, bindings, consumer beans
+      BindingPropertyRouter.java           # Routes properties into the core / Kafka namespaces
+      ConsumerConfigValidator.java         # Startup checks for batch and acknowledgment settings
       StartupClusterState.java             # Tracks initialized clusters
     consumer/
       MessageProcessor.java                # Marker interface — implement in your app
-      MessageHandlerRegistry.java          # Discovers handlers across all MessageProcessor beans
+      MessageHandlerRegistry.java          # Discovers handlers, resolves shapes, converts payloads
       IdempotentConsumer.java              # Deduplication wrapper + timestamp tracking
-      LastProcessedTimestampTracker.java   # Tracks last processed timestamp per topic
+      BatchIdempotentConsumer.java         # Batch consumer: dedup, commit point, watermark
+      BatchPassThroughConsumer.java        # Batch consumer for mode: standard (raw envelope)
+      BatchMessages.java                   # Unpacks the batch envelope into per-record messages
+      BatchHandler.java                    # Seam between the registry and the batch consumer
+      BatchOutcome.java                    # Per-record verdicts reported by a batch handler
+      BatchConversionException.java        # Conversion failure carrying the record's position
+      LastProcessedTimestampTracker.java   # Tracks last committed timestamp per (topic, partition)
       TimestampSeekRebalanceListener.java  # Seeks consumer by timestamp on failover
       TimestampStore.java                  # Interface — implement to persist timestamps across restarts
     producer/
@@ -205,6 +216,21 @@ kafka-dr-example-redis-state/              # Example: Redis-backed FailoverState
     RedisFailoverStateStoreTest.java       # Unit tests for the SPI contract
   src/main/resources/
     application.yml                        # failback-after: "22:00:00" + Redis config
+
+kafka-dr-example-mixed-batch/              # Example: batch and record consumers side by side
+  src/main/java/dev/semeshin/kafkadr/
+    MixedBatchExampleApp.java              # Entry point
+    model/
+      OrderEvent.java                      # JSON payload for the batch topic
+    handler/
+      OrderBatchProcessor.java             # Batch handler returning BatchOutcome (per-record verdicts)
+      AuditRecordProcessor.java            # Ordinary Message<String> handler, unchanged by batching
+    controller/
+      MixedBatchController.java            # REST API: sendBatch, single send, counters
+  src/test/java/.../
+    MixedBatchConfigurationTest.java       # Asserts the shipped YAML resolves to the intended shapes
+  src/main/resources/
+    application.yml                        # One batching consumer, one not
 
 docker-compose.yml                         # 3 single-node Kafka + MirrorMaker 2 + Schema Registry + Redis
 docker-compose-multinode.yml               # 2 clusters × 3 nodes + MirrorMaker 2 + Schema Registry + Redis
@@ -372,6 +398,57 @@ kafka-dr:
 ```
 
 The app includes `RedisTimestampStore` to persist timestamps across restarts. MirrorMaker 2 config is in `mm2/mm2.properties`.
+
+### Example: Batch and Record Consumers Side by Side
+
+`kafka-dr-example-mixed-batch` runs two consumers in one application: `order-events` is
+consumed in batches with per-record verdicts and manual acknowledgment, `audit-events` one
+record at a time. Batching is a per-binding property, so neither consumer is aware of the
+other's mode.
+
+```bash
+# 1. Infrastructure (two clusters are enough)
+docker-compose up -d
+
+# 2. Build the starter
+mvn -f kafka-dr-spring-boot-starter/pom.xml clean install
+
+# 3. Run
+mvn -f kafka-dr-example-mixed-batch/pom.xml spring-boot:run
+```
+
+```bash
+# 30 orders, published with sendBatch — one failover decision for the whole batch
+curl -X POST 'localhost:8083/api/orders?count=30'
+
+# One audit record, published and consumed the ordinary way
+curl -X POST 'localhost:8083/api/audit?message=user-logged-in&messageId=a-1'
+
+# Counters for both consumers
+curl -s localhost:8083/api/status | jq
+```
+
+The batch handler exercises all three verdicts, so the interesting cases are reachable
+from the REST API:
+
+```bash
+# discard: unprocessable, keeps its idempotency mark, never redelivered
+curl -X POST 'localhost:8083/api/orders?count=5&amount=-1'
+
+# retry: mark released, Kafka redelivers, orders after it are deduplicated on the way back
+curl -X POST 'localhost:8083/api/orders?count=5&customer=flaky'
+```
+
+Watch the log for the commit point moving only as far as the first retried record, while
+the records marked done behind it are redelivered and then skipped as duplicates.
+
+Killing the primary mid-batch shows the producer side: only the unsent tail moves to the
+secondary, and `clusters` in the response lists both.
+
+```bash
+docker stop kafka-primary
+curl -X POST 'localhost:8083/api/orders?count=50'
+```
 
 ### Example: Restart-Safe `failback-after` (Redis-backed `FailoverStateStore`)
 
@@ -556,7 +633,6 @@ Applied to all clusters. Per-cluster `environment` overrides these defaults:
 kafka-dr:
   default-environment:
     spring.cloud.stream.kafka.binder:
-      auto-create-topics: false
       replication-factor: 3
       configuration:
         security.protocol: SSL
@@ -569,7 +645,7 @@ kafka-dr:
         max.poll.records: 500
 ```
 
-> **Note:** The binder-level `auto-create-topics` is set to `false` by design. Use the application-level `kafka-dr.auto-create-topics: true` flag instead — it provisions topics asynchronously via `KafkaAdminHelper`.
+> **Note:** The starter sets the binder-level `auto-create-topics` to `false` for every cluster, so it does not need to appear here. Topic creation belongs to `kafka-dr.auto-create-topics` instead — see [Topic Provisioning](#topic-provisioning). Setting the binder-level flag explicitly, in `default-environment` or per cluster, still overrides the starter's default.
 
 ### Default Consumer / Producer Properties
 
@@ -589,7 +665,9 @@ kafka-dr:
       key.serializer: org.apache.kafka.common.serialization.StringSerializer
 ```
 
-Per-topic `properties` are merged on top. Kafka client properties go under `configuration:`.
+Per-topic `properties` are merged on top. Kafka client properties go under `configuration:`; everything else is routed by name into the core or Kafka-extension binding namespace — see [Consumers](#consumers).
+
+> These defaults apply to **every** consumer and producer. Batch tuning such as `max.poll.records` belongs in the per-consumer `batch:` block instead, or consumers that do not batch inherit it too.
 
 > **Note:** `key.serializer` is set to `StringSerializer` because the default `ByteArraySerializer` fails when Spring Cloud Stream passes message keys as Strings.
 
@@ -614,6 +692,27 @@ Consumers are configured as a map keyed by an arbitrary logical name. The key is
 - Spring Cloud Stream binding naming (`ordersConsumerPrimary-in-0`)
 - Idempotency scoping (`{consumerName}:{messageId}`)
 - Per-consumer timestamp tracking for seek-by-timestamp
+
+Per-consumer `properties` are routed into the two namespaces Spring Cloud Stream actually uses. The two field sets are disjoint, and the routing table is derived from the Spring Cloud Stream classes themselves, so it cannot drift on upgrade:
+
+| Namespace | Target | Examples |
+|---|---|---|
+| core (`ConsumerProperties`) | `spring.cloud.stream.bindings.{binding}.consumer.*` | `concurrency`, `max-attempts`, `back-off-*`, `retryable-exceptions`, `header-mode` |
+| Kafka extension (`KafkaConsumerProperties`) | `spring.cloud.stream.kafka.bindings.{binding}.consumer.*` | `ack-mode`, `enable-dlq`, `dlq-name`, `start-offset`, `configuration.*` |
+
+```yaml
+      properties:
+        concurrency: 3                 # -> core
+        max-attempts: 1                # -> core
+        ack-mode: MANUAL_IMMEDIATE     # -> Kafka extension
+        enable-dlq: true               # -> Kafka extension
+        configuration:                 # -> Kafka extension
+          max.poll.interval.ms: 300000
+```
+
+A key that belongs to neither set is almost certainly a typo: it is routed to the Kafka namespace (where the binder ignores it) and reported with a warning naming the consumer, so it no longer disappears silently.
+
+A few keys are owned by the starter and rejected if set by hand, because overriding them breaks binding lifecycle or payload handling: `auto-startup`, `batch-mode`, `use-native-decoding`, `destination`, `group`, `binder`. The error message names the setting to use instead.
 
 This map form is also the format that works on Kubernetes / EKS without `[]` indexes:
 
@@ -672,6 +771,8 @@ Behavior:
 - **Malformed messages** never reach your handler. The listener container detects the deserialization failure *before* invoking the consumer function, throws a `DeserializationException`, and the default error handler classifies it as fatal: no retries, the error is logged, the offset is committed, and consumption continues with the next record. The idempotency store and the last-processed-timestamp tracker are not touched.
 - The configuration is applied to the consumer bindings of **every cluster**, so the behavior is identical after failover.
 
+> **In batch mode this works differently.** The container calls `checkDeser` only on the record path, so with `batch.enabled: true` unreadable records are *not* filtered out before the listener runs. They reach the starter, which reports them as conversion failures at their position in the batch: everything before the bad record is committed, and redelivery resumes from it. The behaviour is safe, but it is not the "never reaches your handler" guarantee described above. The startup log warns when both are configured together.
+
 If the message **key** can also be malformed, wrap it the same way: `key.deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer` + `spring.deserializer.key.delegate.class: <real key deserializer>`.
 
 To capture skipped records instead of only logging them, enable the binder DLQ in the same `properties` block (outside `configuration`):
@@ -687,6 +788,44 @@ To capture skipped records instead of only logging them, enable the binder DLQ i
 
 The DLQ producer belongs to the cluster's own binder, so each cluster gets its own DLQ topic.
 
+#### DLQ with `content-type: native`
+
+With native decoding the payload reaching the DLQ is no longer `byte[]`, so the binder
+refuses to publish unless the **DLQ producer** carries its own serializer:
+
+```
+Native decoding is used on the consumer. Payload is not byte[] and no serializer is set on the DLQ producer.
+```
+
+The failure surfaces only after the retries are exhausted — at which point the record the
+DLQ existed to preserve is dropped instead. The starter therefore rejects this combination
+at startup. Configure the serializer under the same consumer:
+
+```yaml
+kafka-dr:
+  consumers:
+    payment-events-consumer:
+      topic: payment-events
+      group: my-group
+      handler: processPayment
+      content-type: native
+      properties:
+        enable-dlq: true
+        dlq-name: payment-events-dlq
+        dlq-producer-properties:
+          configuration:
+            value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+            key.serializer: org.apache.kafka.common.serialization.StringSerializer
+            schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8081}
+        configuration:
+          value.deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+          spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+```
+
+`dlq-producer-properties` is a field of `KafkaConsumerProperties`, so it routes to the
+Kafka namespace automatically. `key.serializer` is only needed when the record key is not
+`byte[]` either — the binder checks key and payload separately.
+
 Quick test with the example app — send non-Avro garbage straight into `payment-events` and watch it being skipped while the app keeps consuming:
 
 ```bash
@@ -696,6 +835,187 @@ docker exec -it kafka-primary kafka-console-producer \
 # Valid Avro messages sent via the REST API continue to be processed normally:
 curl -X POST 'localhost:8080/api/messages/payment-events/avro?paymentId=pay-1&orderId=ord-1&amount=99.95'
 ```
+
+### Batch Processing
+
+Batching is per-consumer and off by default. Turning it on changes how records reach the handler, how often offsets are committed, and — with a Redis-backed store — how many round-trips deduplication costs.
+
+```yaml
+kafka-dr:
+  consumers:
+    orders-consumer:
+      topic: order-events
+      group: my-group
+      handler: processOrders
+      content-type: json
+      batch:
+        enabled: true
+        mode: split            # split (default) | standard
+        max-records: 500       # -> configuration.max.poll.records
+        min-bytes: 1024        # -> configuration.fetch.min.bytes
+        max-wait-ms: 250       # -> configuration.fetch.max.wait.ms
+        error-policy: fail-batch   # fail-batch (default) | skip-failed
+```
+
+Batching is a per-consumer setting, so one application can mix batching and non-batching consumers freely — `batch-mode` is a binding property, and each consumer gets its own binding, container and function bean.
+
+> Raise `max.poll.interval.ms` alongside `max-records`: that many records times the per-record processing time has to fit inside it, or the consumer is evicted from the group mid-batch and the whole batch is redelivered. The starter warns when `max-records` is raised and the interval is left at its default.
+>
+> Put batch tuning in the per-consumer `batch:` block, not in `default-consumer-properties` — the latter applies to every consumer, including the ones that do not batch.
+
+#### Two modes
+
+| Guarantee | `split` (default) | `standard` |
+|---|---|---|
+| Per-record deduplication | Yes, through `IdempotencyStore` | No — there are no per-record messages |
+| Deduplication after failover | Automatic | Your handler's job |
+| Watermark on partial failure | Up to the successful prefix | Batch maximum only |
+| Idempotency rollback | Yes | Nothing to roll back |
+| Existing handlers | Work unchanged | Rewrite |
+| Signature | `List<Message<T>>` | `Message<List<T>>` |
+| Familiar to Spring Cloud Stream users | Starter-specific | Fully |
+
+`split` unpacks the batch envelope back into per-record messages, which is what lets deduplication, watermarks and existing `Message<T>` handlers keep working. `standard` hands over the raw envelope exactly as plain Spring Cloud Stream delivers it, including `kafka_acknowledgment` and `kafka_batchConvertedHeaders`.
+
+The first four rows are the reason this starter exists, so `mode: standard` together with idempotency is rejected at startup rather than silently ignored — set `idempotency-enabled: false` on that consumer to acknowledge the trade-off:
+
+```yaml
+    telemetry-consumer:
+      topic: raw-telemetry
+      handler: processTelemetry
+      idempotency-enabled: false   # required by mode: standard
+      batch:
+        enabled: true
+        mode: standard
+```
+
+`idempotency-enabled` can only narrow the global `kafka-dr.idempotency.enabled` flag — the store bean itself is conditional on it — which is what lets a standard-mode consumer coexist with deduplicating ones in the same application.
+
+#### Handler shapes
+
+The shape is derived from the handler's signature; nothing declares it in configuration:
+
+| Signature | Mode | Behaviour |
+|---|---|---|
+| `void h(Message<T>)` | `split` | Called per record. Failures are per record, so `error-policy` applies |
+| `void h(List<Message<T>>)` | `split` | Called once with the deduplicated batch |
+| `BatchOutcome h(List<Message<T>>)` | `split` | Called once; reports a verdict per record — see [Manual Acknowledgment](#manual-acknowledgment) |
+| `void h(Message<List<T>>)` | `standard` | Raw envelope, headers included |
+| `void h(List<T>)` | `standard` | Payloads only |
+
+Payloads are converted element by element to the declared type, honouring `content-type` exactly as in record mode. A mismatch between the shape and `batch.mode` fails at startup with the signature to use.
+
+```java
+@Component
+public class OrderProcessor implements MessageProcessor {
+
+    // split mode, existing handler — unchanged by enabling batching
+    public void processOrder(Message<OrderEvent> message) { ... }
+
+    // split mode, whole batch at once
+    public void processOrders(List<Message<OrderEvent>> messages) { ... }
+
+    // standard mode
+    public void processRaw(Message<List<byte[]>> batch) {
+        Acknowledgment ack = batch.getHeaders()
+                .get(KafkaHeaders.ACKNOWLEDGMENT, Acknowledgment.class);
+        ...
+    }
+}
+```
+
+#### Error policy
+
+| Value | Behaviour |
+|---|---|
+| `fail-batch` *(default)* | Stops at the failing record and throws `BatchListenerFailedException` with its index. Whether that commits the successful prefix or replays the whole batch depends on `ack-mode` — see below |
+| `skip-failed` | Logs the failure, releases that record's idempotency mark, and continues with the rest |
+
+> **A partial commit needs `ack-mode: MANUAL_IMMEDIATE`.** With the container-managed
+> modes the exception does not reach `DefaultErrorHandler` intact — Spring Integration
+> wraps it in a `MessageHandlingException` on the way out of the function, and the handler
+> logs *"Expected a BatchListenerFailedException; re-delivering full batch"* and replays
+> from record 0. Nothing is lost: the already-processed prefix is filtered out by the
+> idempotency store on redelivery. But it is processed-then-deduplicated rather than
+> committed, and the timestamp watermark is deliberately left where it was, because
+> nothing was committed. The startup log warns when `fail-batch` is combined with anything
+> other than `MANUAL_IMMEDIATE`.
+
+`skip-failed` breaks per-key ordering — a later record with the same key can be processed before the skipped one. Use it where processing is commutative (upsert by key, counters), not where the sequence of states for one entity matters.
+
+`skip-failed` requires a per-record handler. With `List<Message<T>>` the handler is invoked once for the whole list, so an individual record cannot be skipped; that combination is rejected at startup, with `BatchOutcome` offered as the way to report per-record verdicts.
+
+Conversion failures are treated the same way as handler failures and carry the record's index. Unlike record mode, a malformed payload is never substituted with its raw string: putting a `String` into a `List<OrderEvent>` would only surface as a `ClassCastException` deep inside business logic, far from the record that caused it.
+
+#### What batching buys
+
+- **Fewer commits and polls.** One commit per batch instead of one per record.
+- **One deduplication round-trip.** `IdempotencyStore.filterProcessable` defaults to a loop, but a Redis-backed store overrides it with a pipeline — 500 sequential `SETNX` calls become one. The example `RedisIdempotencyStore` does exactly that.
+- **Per-partition commits.** The starter enables `subBatchPerPartition` for batching consumers, so a failure in one partition does not truncate the commit prefix of the others.
+
+### Manual Acknowledgment
+
+`ack-mode` passes through to the container as any other Kafka binder property:
+
+```yaml
+      properties:
+        ack-mode: MANUAL_IMMEDIATE
+```
+
+In `split` mode the **starter owns the commit** — it computes how far the batch may be acknowledged, acknowledges it, and only then advances the timestamp watermark. Handlers never touch `Acknowledgment`. In `standard` mode the handler owns it, and must call `acknowledge()` itself or offsets are never committed.
+
+#### What each mode does in batch mode
+
+| `ack-mode` | Commit | Timestamp watermark |
+|---|---|---|
+| `BATCH` *(default)* | Container, after the listener returns — all or nothing | Whole batch on success; **not advanced** on failure |
+| `RECORD` | Not applied — the binder skips it in batch mode, leaving the `BATCH` default | Same as `BATCH` |
+| `MANUAL` | Whole batch only | Frozen on partial failure — nothing was committed |
+| `MANUAL_IMMEDIATE` | Successful prefix, immediately | Follows the acknowledged index |
+| `TIME` / `COUNT` / `COUNT_TIME` | On the container's own schedule | **Not advanced** |
+
+`BATCH` commits the batch as a unit: on failure nothing is committed, so the watermark
+stays where it was and the batch is redelivered in full. `MANUAL_IMMEDIATE` is the only
+mode in which the successful prefix is committed and the watermark moves with it — which
+is why it is the one to choose when batches are large enough that reprocessing the prefix
+costs something.
+
+The last row is a deliberate choice, not a gap. These modes commit at a moment the starter cannot observe, so advancing the watermark would risk placing it ahead of the last committed offset. Leaving it alone makes seek-by-timestamp fall back to committed offsets after a failover: more redelivery, no loss.
+
+#### Why an arbitrary subset cannot be acknowledged
+
+Kafka commits a per-partition **watermark**, not a set of records. `Acknowledgment.acknowledge(int index)` commits a prefix, and spring-kafka enforces four constraints on it: `MANUAL_IMMEDIATE` only, the listener must receive a list, the call must happen on the consumer thread, and the index must strictly increase.
+
+Sparse completion lives in the idempotency store instead. `BatchOutcome` reports a verdict per record and the starter translates it into the two mechanisms that do exist:
+
+```java
+public BatchOutcome processOrders(List<Message<OrderEvent>> messages) {
+    BatchOutcome outcome = BatchOutcome.of(messages);
+    for (int i = 0; i < messages.size(); i++) {
+        try {
+            handle(messages.get(i));
+            outcome.done(i);
+        } catch (PoisonPayloadException e) {
+            outcome.discard(i, e);   // closed for good — do not redeliver
+        } catch (TransientException e) {
+            outcome.retry(i, e);     // hand back to Kafka
+        }
+    }
+    return outcome;
+}
+```
+
+- `done` and `discard` both **keep** the record's idempotency mark — one because it succeeded, the other because repeating it would fail again.
+- `retry` **releases** the mark, so the redelivery is not dropped as a duplicate.
+- A record left unmarked counts as `retry`, with a warning naming the handler. Assuming success would silently drop whatever the handler forgot; assuming failure costs one redelivery the store absorbs.
+
+The starter commits up to the first `retry`, releases the marks of every retried record, and advances the watermark to the acknowledged index. Records marked `done` *after* a retried one are redelivered — offsets move as a watermark — and the store is what remembers they are already finished.
+
+#### Constraints worth knowing
+
+- **`MANUAL` + `fail-batch` is rejected at startup.** Partial acknowledgment requires `MANUAL_IMMEDIATE`; without it the successful prefix cannot be committed and every failure reprocesses the whole batch.
+- **Acknowledgment happens on the consumer thread.** `parallelStream()` inside a handler is fine; handing the batch to an executor and acknowledging later is not.
+- **`MANUAL_IMMEDIATE` commits synchronously on each call.** In batch mode that is one or two commits per poll — effectively free.
 
 ### Producers
 
@@ -721,6 +1041,20 @@ Producers are also a map keyed by logical name. `ResilientProducer.send(topic, .
 kafka-dr:
   auto-create-topics: true    # false in production (default), true in development
 ```
+
+One flag, deliberately not the binder's own. `KafkaAdminHelper` opens an AdminClient to
+**every reachable cluster** at startup — and again from `LateBindingInitializer` when a
+cluster comes back — and creates the topics of all configured consumers and producers.
+
+The binder's lazy creation would only reach the cluster that currently holds bindings, so
+the standby cluster would get its topics no earlier than the failover itself, which is the
+worst possible moment and too late for MirrorMaker to have been replicating into them.
+Lazy creation also routes through `KafkaTopicProvisioner`, which blocks on metadata lookups
+against dead brokers (`max.block.ms`) instead of failing cleanly on send.
+
+That is why the starter forces the binder-level flag to `false` on every cluster. Override
+it in `default-environment` or per cluster if you deliberately want the binder to create
+topics as well.
 
 ### Health Check & Failover Tuning
 
@@ -890,14 +1224,14 @@ The framework provides `InMemoryIdempotencyStore` as default fallback — it is 
 
 The SPI receives the **full message** — headers and payload — so the deduplication decision can be based on anything: the Kafka key, any header, or data extracted from the payload itself. Two customization points:
 
-**Override `extractKey` only** — keep the storage logic of an existing implementation, change just how the key is derived. The built-in stores call `extractKey(consumerName, message)` from `tryProcess`, so this is the lightest way to customize:
+**Override `extractKey` only** — keep the storage logic of an existing implementation, change just how the key is derived. The built-in stores call `extractKey(message)` from `tryProcess`, so this is the lightest way to customize:
 
 ```java
 @Component
 public class PayloadKeyedStore extends InMemoryIdempotencyStore {   // or RedisIdempotencyStore
     @Override
-    public String extractKey(String consumerName, Message<?> message) {
-        // any header or payload data; consumerName allows per-consumer logic
+    public String extractKey(Message<?> message) {
+        // any header or payload data
         return ((OrderEvent) message.getPayload()).getOrderId();
     }
 }
@@ -912,7 +1246,7 @@ The default `extractKey` uses the Kafka record key (`KafkaHeaders.RECEIVED_KEY`,
 public class MyIdempotencyStore implements IdempotencyStore {
     @Override
     public boolean tryProcess(String clusterName, String consumerName, Message<?> message) {
-        String key = extractKey(consumerName, message);   // default Kafka-key logic, or override it
+        String key = extractKey(message);   // default Kafka-key logic, or override it
         return markAsProcessedIfFirstTime(consumerName, key);
     }
 }
@@ -920,7 +1254,56 @@ public class MyIdempotencyStore implements IdempotencyStore {
 
 The static helper `IdempotencyStore.kafkaKey(message, customKeyHeader)` exposes the default key-based extraction (including custom-header support) for reuse. The example app includes `RedisIdempotencyStore` built on it.
 
-> **Migration note:** the SPI changed from `tryProcess(String consumerName, String messageId)` to `tryProcess(String clusterName, String consumerName, Message<?> message)`. Key extraction moved from `IdempotentConsumer` into the store: existing key-based implementations should call `extractKey(consumerName, message)` (or the static `IdempotencyStore.kafkaKey(message, keyHeader)`) and handle the `null` (no key) case by returning `true`.
+**Two optional methods** cover batch consumption and failure recovery. Both have defaults, so existing stores keep compiling and working:
+
+```java
+// Batch check. Default is a loop over tryProcess; override it when the store is remote.
+default List<Message<?>> filterProcessable(String clusterName, String consumerName,
+                                           List<Message<?>> messages);
+
+// Release marks for messages that were accepted but never processed. Default is a no-op.
+default void rollback(String clusterName, String consumerName, List<Message<?>> messages);
+```
+
+`filterProcessable` must return **the same message instances** as the input, not copies: callers map records back to their position in the batch by identity, and that is what makes partial commits land on the right offset. `RedisIdempotencyStore` overrides it with a pipeline, turning one round-trip per record into one per batch.
+
+`rollback` matters beyond batching. `tryProcess` marks a message *before* the handler runs, so a failure between the two steps leaves it recorded as done and the redelivery Kafka performs is dropped as a duplicate. The window is narrow with auto-commit and as wide as the application wants it with manual acknowledgment. Implement it wherever keys can be deleted — `InMemoryIdempotencyStore` removes the entry, `RedisIdempotencyStore` issues a batched `DEL`.
+
+> **Migration note:** `TimestampStore` keys changed from a bare topic name to `topic-partition`. The interface itself is unchanged — the key stays an opaque `String` — so implementations such as the example `RedisTimestampStore` need no edits. Entries written under the old format are simply never read again, so the first start after upgrading falls back to committed offsets once.
+
+> **Migration note:** the SPI changed from `tryProcess(String consumerName, String messageId)` to `tryProcess(String clusterName, String consumerName, Message<?> message)`. Key extraction moved from `IdempotentConsumer` into the store: existing key-based implementations should call `extractKey(message)` (or the static `IdempotencyStore.kafkaKey(message, keyHeader)`) and handle the `null` (no key) case by returning `true`.
+
+### Diagnostic Logging
+
+```yaml
+kafka-dr:
+  debug:
+    enable: true   # default: false
+```
+
+Off by default, and deliberately so: during a failover a probe failure *is* the expected signal, and printing a stack trace for every one of them (each cluster, every `interval-ms`) would bury the `DR_EVENT` lines that actually matter. Turn it on when the question is **why** a cluster is considered down rather than *that* it is.
+
+What the flag changes:
+
+| Where | Off (default) | On |
+|---|---|---|
+| `KafkaAdminHelper.probeCluster` | Failure swallowed, `false` returned | `WARN` with brokers, timeout and the full stack trace |
+| `KafkaAdminHelper.provisionTopics` | `WARN` with `e.getMessage()` | Same line with the stack trace |
+| `ClusterHealthChecker` — basic probe, deep probe, probe timeout | `DEBUG` with `e.getMessage()` | `WARN` with the stack trace |
+| `ResilientProducer` — cluster unavailable, retry attempt, serialization error | `WARN` with `e.getMessage()` | `WARN` with the stack trace |
+| `ResilientProducer` — retries exhausted, all clusters unavailable (single and batch) | Message and counts only, no cause | Same line plus the stack trace of the exception that ended the retry ladder |
+| `BindingLifecycleManager` — start/stop binding, producer cache cleanup | `ERROR` with `e.getMessage()` | `ERROR` with the stack trace |
+
+The flag is read once at startup: `DynamicBindingRegistrar` pushes it into `KafkaAdminHelper` (a static utility, so there is nothing for Spring to inject into) before the first probe runs, and the bean-side users read it from `KafkaClusterProperties`.
+
+Everything above is the *cause* of a probe failure. Kafka's own client chatter is a separate axis and stays under `logging.level` — the examples silence it explicitly:
+
+```yaml
+logging:
+  level:
+    dev.semeshin.kafkadr: INFO
+    org.apache.kafka.clients.NetworkClient: ERROR   # raise to WARN to see connection attempts
+```
 
 ## Adding Business Logic
 
@@ -966,6 +1349,30 @@ public class OrderService {
 }
 ```
 
+For many messages at once, `sendBatch` makes **one** failover decision for the whole batch:
+
+```java
+List<Message<?>> messages = orders.stream()
+        .map(o -> (Message<?>) MessageBuilder.withPayload(o)
+                .setHeader(KafkaHeaders.KEY, o.getOrderId())
+                .build())
+        .toList();
+
+BatchSendResult result = producer.sendBatch("order-events", messages);
+
+if (!result.allSent()) {
+    result.failures().forEach(f -> log.warn("not sent: {}", f.messageId()));
+}
+```
+
+Sending in a loop would re-run the retry ladder for every message against a cluster that is already gone — 500 messages times `failure-threshold` doomed attempts before the failover. Here the first message that reports the cluster unavailable ends the attempt for the entire remainder.
+
+On failover only the **unsent tail** moves to the next cluster; resending the whole batch would duplicate everything the previous cluster already acknowledged. A `SerializationException` is treated as that message's problem rather than the cluster's: it is marked failed and the batch continues on the same cluster.
+
+`BatchSendResult` holds one `SendResult` per input message, in order, plus `sent()`, `failed()`, `allSent()`, `failures()` and `clusters()`. There is deliberately no single `cluster` field — a batch that failed over mid-way was written to more than one, and that is exactly the case a single field would misreport.
+
+Sends stay synchronous. `StreamBridge.send` returns a boolean rather than a future, so going async would cost the very failure signal that drives the failover; throughput belongs to `linger.ms` and `batch.size` in per-producer `properties.configuration`.
+
 The `messageId` parameter (or `KafkaHeaders.KEY` header) is used as:
 - **Kafka record key** — determines partition assignment
 - **Idempotency key** — `IdempotentConsumer` deduplicates by `KafkaHeaders.RECEIVED_KEY` on the consumer side
@@ -1004,12 +1411,18 @@ Cluster switch: primary -> secondary
   1. BindingLifecycleManager stops primary consumers, starts secondary consumers
   2. Secondary consumer receives partition assignments
   3. TimestampSeekRebalanceListener:
-     - Gets last processed timestamp from LastProcessedTimestampTracker
+     - Gets the last committed timestamp for each (topic, partition)
      - Calls consumer.offsetsForTimes(timestamp) on each partition
      - Seeks to the offset matching that timestamp
   4. Consumer reads from the seek point, not from offset 0 or latest
   5. IdempotentConsumer deduplicates any overlap in the boundary window
 ```
+
+Watermarks are tracked **per (topic, partition)**. A per-topic watermark is the maximum across partitions, which would seek a lagging partition past records it never processed.
+
+The watermark follows what was **committed**, not what was processed. With manual acknowledgment a batch can be handled and acknowledged at different moments; advancing the watermark first would make the seek skip records whose offsets never landed, and nothing would redeliver them. When a partition has no watermark — nothing processed yet, or an `ack-mode` whose commits the starter cannot observe — the seek is skipped and the consumer falls back to committed offsets.
+
+> This mechanism assumes topic names are identical across clusters. The bundled MirrorMaker 2 configuration uses `IdentityReplicationPolicy` for that reason; switching to `DefaultReplicationPolicy`, which prefixes topics with the source cluster alias, silently breaks the lookup.
 
 ```
 DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=1714003200000)
@@ -1042,11 +1455,18 @@ DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=171400320000
 | Deep probe via `describeTopics()` | Read-only check: partition leader count + ISR size; catches "controller alive, brokers dead" and under-replicated partitions without writing test data |
 | One-directional MirrorMaker replication | `IdentityReplicationPolicy` with bidirectional replication causes infinite message loops; active → standby only |
 | Kafka key `byte[]` → `String` conversion | `RECEIVED_KEY` arrives as `byte[]`; `IdempotentConsumer` converts to UTF-8 String for consistent idempotency key comparison |
+| Binding properties routed by reflecting over Spring Cloud Stream's own classes | Core and Kafka-extension property sets are disjoint; deriving the routing table from the classes means it cannot drift on upgrade, and a key in neither set is reported as a probable typo instead of vanishing |
+| Batch envelope unpacked back into per-record messages | Keeps `IdempotencyStore`, key extraction, watermarks and existing `Message<T>` handlers working unchanged; batching becomes a transport setting rather than a second API |
+| Partial commits only under `MANUAL_IMMEDIATE` | Spring Integration wraps the exception before `DefaultErrorHandler` sees it, so `BatchListenerFailedException` cannot drive a partial commit from inside a Spring Cloud Stream function; verified against a live broker. Under container-managed ack modes the batch is replayed in full and the watermark stays put |
+| Watermark advanced by commit, never by processing | With manual acknowledgment the two happen at different moments; a watermark ahead of the committed offset makes seek-by-timestamp skip records nothing will redeliver |
+| Sparse completion kept in the idempotency store, not in offsets | Kafka commits a per-partition watermark, so an arbitrary subset cannot be acknowledged; `BatchOutcome` verdicts map onto a contiguous commit plus the store as the "already done" set |
+| Conversion failures in batch mode throw instead of falling back | Substituting a raw `String` would put a foreign type into a `List<T>` and surface as a `ClassCastException` inside business logic, far from the record that caused it |
+| `sendBatch` abandons a dead cluster after the first failed message | One message proves the cluster is gone; retrying the ladder for the rest costs `size × failure-threshold` doomed attempts before the failover |
 
 ## Tech Stack
 
 - Java 17
-- Spring Boot 4.0.5
+- Spring Boot 4.0.7
 - Spring Cloud 2025.1.1 (Kafka Binder)
 - Apache Kafka 3.9 (KRaft, no ZooKeeper)
 - Confluent Schema Registry 8.2.0

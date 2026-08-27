@@ -4,6 +4,8 @@ import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Tracks processed messages to prevent duplicate processing during DR failover.
@@ -34,6 +36,12 @@ public interface IdempotencyStore {
         }
 
         @Override
+        public List<Message<?>> filterProcessable(String clusterName, String consumerName,
+                                                  List<Message<?>> messages) {
+            return messages;
+        }
+
+        @Override
         public boolean isEnabled() {
             return false;
         }
@@ -56,6 +64,54 @@ public interface IdempotencyStore {
      * @return true if the message should be processed (not seen before), false if duplicate
      */
     boolean tryProcess(String clusterName, String consumerName, Message<?> message);
+
+    /**
+     * Batch counterpart of {@link #tryProcess}: returns the messages that should be
+     * processed, in their original order.
+     *
+     * <p>The default implementation loops, so every existing store works in batch mode
+     * unchanged. Implementations backed by a remote store should override it — a Redis
+     * pipeline turns 500 sequential round-trips into one.
+     *
+     * <p>The returned list must contain <b>the same message instances</b> as the input,
+     * not copies: callers map records back to their position in the batch by identity,
+     * which is what makes partial commits land on the right offset.
+     *
+     * @param clusterName  logical cluster name
+     * @param consumerName logical consumer name
+     * @param messages     the batch, in poll order
+     * @return the subset to process, in the same relative order
+     */
+    default List<Message<?>> filterProcessable(String clusterName, String consumerName,
+                                               List<Message<?>> messages) {
+        List<Message<?>> accepted = new ArrayList<>(messages.size());
+        for (Message<?> message : messages) {
+            if (tryProcess(clusterName, consumerName, message)) {
+                accepted.add(message);
+            }
+        }
+        return accepted;
+    }
+
+    /**
+     * Removes the marks left by {@link #tryProcess} for messages that were accepted
+     * but never actually processed — the handler threw, or a batch was abandoned
+     * part-way through.
+     *
+     * <p>Without this, the mark-then-process order is at-most-once: a failure between
+     * the two steps leaves the message recorded as done, and the redelivery Kafka
+     * performs is dropped as a duplicate. The window is narrow with auto-commit and
+     * as wide as the application wants it with manual acknowledgment.
+     *
+     * <p>Default is a no-op so existing stores keep compiling; implementations that
+     * can delete their keys should override it.
+     *
+     * @param clusterName  logical cluster name
+     * @param consumerName logical consumer name
+     * @param messages     messages to un-mark
+     */
+    default void rollback(String clusterName, String consumerName, List<Message<?>> messages) {
+    }
 
     /**
      * Extracts the deduplication key for a message. The built-in implementations

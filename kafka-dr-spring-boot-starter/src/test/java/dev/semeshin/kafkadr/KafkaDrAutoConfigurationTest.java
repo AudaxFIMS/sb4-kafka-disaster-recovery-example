@@ -115,25 +115,80 @@ class KafkaDrAutoConfigurationTest {
     }
 
     @Test
-    void timestampSeekCustomizerInstallsRebalanceListenerOnContainer() {
-        KafkaDrAutoConfiguration cfg = new KafkaDrAutoConfiguration();
+    void exactlyOneListenerContainerCustomizerIsExposed() {
+        // KafkaBinderConfiguration injects a single ListenerContainerCustomizer. A second
+        // bean of this type makes the binder child context fail to start with
+        // "required a single bean, but 2 were found", which only shows up when a binder is
+        // actually created — not in a unit test that calls the factory method directly.
+        enabledRunner.run(ctx ->
+                assertThat(ctx.getBeansOfType(ListenerContainerCustomizer.class)).hasSize(1));
+    }
+
+    @Test
+    void customizerInstallsTheRebalanceListenerOnlyWhenSeekByTimestampIsOn() {
+        KafkaClusterProperties properties = propertiesWith(consumerConfig("plain", "orders", "g1", false));
         LastProcessedTimestampTracker tracker = new LastProcessedTimestampTracker(null);
 
-        ListenerContainerCustomizer<AbstractMessageListenerContainer<?, ?>> customizer =
-                cfg.timestampSeekCustomizer(tracker);
+        ContainerProperties without = configure(
+                new KafkaDrAutoConfiguration().kafkaDrContainerCustomizer(properties, tracker), "orders", "g1");
+        assertThat(without.getConsumerRebalanceListener()).isNull();
 
-        AbstractMessageListenerContainer<?, ?> container = mock(AbstractMessageListenerContainer.class);
-        ContainerProperties props = new ContainerProperties("topic");
-        when(container.getContainerProperties()).thenReturn(props);
-
-        customizer.configure(container, "topic", "group");
-
-        assertThat(props.getConsumerRebalanceListener())
-                .isInstanceOf(ConsumerAwareRebalanceListener.class);
+        properties.getFailover().setSeekByTimestamp(true);
+        ContainerProperties with = configure(
+                new KafkaDrAutoConfiguration().kafkaDrContainerCustomizer(properties, tracker), "orders", "g1");
+        assertThat(with.getConsumerRebalanceListener()).isInstanceOf(ConsumerAwareRebalanceListener.class);
 
         @SuppressWarnings("unchecked")
         Consumer<Object, Object> consumer = mock(Consumer.class);
-        ((ConsumerAwareRebalanceListener) props.getConsumerRebalanceListener())
+        ((ConsumerAwareRebalanceListener) with.getConsumerRebalanceListener())
                 .onPartitionsAssigned(consumer, List.<TopicPartition>of());
+    }
+
+    @Test
+    void customizerEnablesSubBatchPerPartitionOnlyForBatchingConsumers() {
+        KafkaClusterProperties properties = propertiesWith(
+                consumerConfig("batched", "orders", "g1", true),
+                consumerConfig("plain", "payments", "g2", false));
+
+        ListenerContainerCustomizer<AbstractMessageListenerContainer<?, ?>> customizer =
+                new KafkaDrAutoConfiguration().kafkaDrContainerCustomizer(
+                        properties, new LastProcessedTimestampTracker(null));
+
+        // A poll is grouped by partition, so without sub-batches a failure in the first
+        // partition truncates the commit prefix for every partition behind it.
+        assertThat(configure(customizer, "orders", "g1").isSubBatchPerPartition()).isTrue();
+        assertThat(configure(customizer, "payments", "g2").isSubBatchPerPartition()).isFalse();
+        // A container the starter did not configure must be left untouched.
+        assertThat(configure(customizer, "unknown", "g3").isSubBatchPerPartition()).isFalse();
+    }
+
+    private static ContainerProperties configure(
+            ListenerContainerCustomizer<AbstractMessageListenerContainer<?, ?>> customizer,
+            String destination, String group) {
+        AbstractMessageListenerContainer<?, ?> container = mock(AbstractMessageListenerContainer.class);
+        ContainerProperties props = new ContainerProperties(destination);
+        when(container.getContainerProperties()).thenReturn(props);
+        customizer.configure(container, destination, group);
+        return props;
+    }
+
+    private static KafkaClusterProperties propertiesWith(KafkaClusterProperties.ConsumerConfig... consumers) {
+        KafkaClusterProperties properties = new KafkaClusterProperties();
+        java.util.Map<String, KafkaClusterProperties.ConsumerConfig> map = new java.util.LinkedHashMap<>();
+        for (KafkaClusterProperties.ConsumerConfig consumer : consumers) {
+            map.put(consumer.getName(), consumer);
+        }
+        properties.setConsumers(map);
+        return properties;
+    }
+
+    private static KafkaClusterProperties.ConsumerConfig consumerConfig(
+            String name, String topic, String group, boolean batch) {
+        KafkaClusterProperties.ConsumerConfig consumer = new KafkaClusterProperties.ConsumerConfig();
+        consumer.setName(name);
+        consumer.setTopic(topic);
+        consumer.setGroup(group);
+        consumer.getBatch().setEnabled(batch);
+        return consumer;
     }
 }
