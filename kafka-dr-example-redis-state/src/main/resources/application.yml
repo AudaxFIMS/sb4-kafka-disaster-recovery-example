@@ -9,7 +9,6 @@ kafka-dr:
 
   default-environment:
     spring.cloud.stream.kafka.binder:
-      auto-create-topics: false
       replication-factor: 1
       configuration:
         reconnect.backoff.ms: 1000

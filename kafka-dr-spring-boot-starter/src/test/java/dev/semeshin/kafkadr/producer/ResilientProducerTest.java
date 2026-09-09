@@ -133,6 +133,42 @@ class ResilientProducerTest {
     }
 
     @Test
+    void allClustersFailedWithDebugStillReportsFailure() {
+        // The terminal lines carry the last exception when debug is on; the failure
+        // path itself must stay exactly the same.
+        properties.getDebug().setEnable(true);
+        when(clusterManager.getActiveCluster()).thenReturn("primary", "secondary");
+        when(streamBridge.send(anyString(), anyString(), any(Message.class)))
+                .thenThrow(new RuntimeException("generic error"));
+
+        ResilientProducer producer = new ResilientProducer(streamBridge, clusterManager, properties);
+        ResilientProducer.SendResult result = producer.send("order-events", "payload", "k-1");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.cluster()).isNull();
+        assertThat(result.messageId()).isEqualTo("k-1");
+        verify(clusterManager).forceUnhealthy("primary");
+        verify(clusterManager).forceUnhealthy("secondary");
+    }
+
+    @Test
+    void streamBridgeFalseWithDebugHasNoExceptionToLog() {
+        // StreamBridge returning false produces no exception: the debug branch must not
+        // hand a null throwable to the logger.
+        properties.getDebug().setEnable(true);
+        when(clusterManager.getActiveCluster()).thenReturn("primary", "secondary");
+        when(streamBridge.send(anyString(), anyString(), any(Message.class))).thenReturn(false);
+
+        ResilientProducer producer = new ResilientProducer(streamBridge, clusterManager, properties);
+        ResilientProducer.SendResult result = producer.send("order-events", "payload", "k-1");
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.cluster()).isNull();
+        verify(clusterManager).forceUnhealthy("primary");
+        verify(clusterManager).forceUnhealthy("secondary");
+    }
+
+    @Test
     void stuckActiveClusterAfterFailoverBreaksLoop() {
         when(clusterManager.getActiveCluster()).thenReturn("primary");
         when(streamBridge.send(anyString(), eq("primary"), any(Message.class))).thenReturn(false);

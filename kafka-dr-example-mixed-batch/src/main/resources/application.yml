@@ -1,0 +1,108 @@
+server:
+  port: 8083
+
+kafka-dr:
+  auto-create-topics: true
+  enabled: true
+  debug.enable: true
+
+  default-environment:
+    spring.cloud.stream.kafka.binder:
+      replication-factor: 1
+      configuration:
+        reconnect.backoff.ms: 1000
+        reconnect.backoff.max.ms: 10000
+        request.timeout.ms: 5000
+        default.api.timeout.ms: 10000
+        socket.connection.setup.timeout.ms: 3000
+
+  default-producer-properties:
+    sync: true
+    configuration:
+      acks: all
+      max.block.ms: 5000
+      delivery.timeout.ms: 10000
+      request.timeout.ms: 5000
+      key.serializer: org.apache.kafka.common.serialization.StringSerializer
+
+  clusters:
+    primary:
+      bootstrap-servers: ${KAFKA_PRIMARY_BROKERS:localhost:9092}
+      priority: 1
+    secondary:
+      bootstrap-servers: ${KAFKA_SECONDARY_BROKERS:localhost:9094}
+      priority: 2
+
+  consumers:
+    # Batch consumer. The handler returns BatchOutcome, so it reports a verdict per
+    # record and the starter commits the prefix up to the first one asking for redelivery.
+    order-events-consumer:
+      topic: order-events
+      group: mixed-batch-orders
+      handler: processOrders
+      content-type: json
+      batch:
+        enabled: true
+        mode: split
+        max-records: 50
+        max-wait-ms: 500
+        error-policy: fail-batch
+      properties:
+        # Partial batch acknowledgment requires MANUAL_IMMEDIATE; with plain MANUAL the
+        # successful prefix could not be committed and the starter rejects the combination.
+        ack-mode: MANUAL_IMMEDIATE
+        configuration:
+          # max-records x per-record processing time has to fit inside this, or the
+          # consumer is evicted from the group mid-batch.
+          max.poll.interval.ms: 300000
+
+    # Record consumer in the same application. Nothing about it changes because the
+    # consumer above batches: batch-mode is a per-binding property.
+    audit-events-consumer:
+      topic: audit-events
+      group: mixed-batch-audit
+      handler: processAudit
+      content-type: string
+
+  producers:
+    order-events-producer:
+      topic: order-events
+      content-type: json
+
+    audit-events-producer:
+      topic: audit-events
+      content-type: string
+
+  failover:
+    seek-by-timestamp: true
+
+  health-check:
+    interval-ms: 5000
+    timeout-ms: 2000
+    failure-threshold: 2
+    recovery-threshold: 3
+
+  idempotency:
+    ttl-seconds: 3600
+    key-prefix: mixed-batch
+
+logging:
+  level:
+    dev.semeshin.kafkadr: INFO
+    org.apache.kafka.clients.admin.AdminClientConfig: WARN
+    org.apache.kafka.clients.consumer.ConsumerConfig: WARN
+    org.apache.kafka.clients.producer.ProducerConfig: WARN
+    org.apache.kafka.common.utils.AppInfoParser: WARN
+    org.apache.kafka.common.config.AbstractConfig: WARN
+    org.apache.kafka.common.metrics.Metrics: WARN
+    org.apache.kafka.clients.admin.internals.AdminMetadataManager: ERROR
+    org.apache.kafka.clients.Metadata: ERROR
+    org.apache.kafka.clients.NetworkClient: ERROR
+    org.apache.kafka.clients.FetchSessionHandler: ERROR
+    org.springframework.kafka.support.LoggingProducerListener: OFF
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

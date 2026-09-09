@@ -144,14 +144,20 @@ class MessageHandlerRegistryTest {
     }
 
     @Test
-    void invalidJsonPayloadFallsBackToStringWithoutCrashing() {
+    void invalidJsonBytesFallBackToStringAndFailLoudlyInATypedHandler() {
+        // The lenient fallback is unchanged — the bytes still arrive as a String. What
+        // changed is what happens next: a handler typed Message<Order> now fails visibly
+        // instead of having its ClassCastException swallowed and the offset committed.
         TestProcessor processor = new TestProcessor(new AtomicReference<>());
         KafkaClusterProperties props = propsFor("orders", "processOrder", "json");
 
         MessageHandlerRegistry registry = new MessageHandlerRegistry(List.of(processor), props);
+        Consumer<Message<?>> handler = registry.getHandler("orders");
+        Message<byte[]> message =
+                MessageBuilder.withPayload("not-json".getBytes(StandardCharsets.UTF_8)).build();
 
-        registry.getHandler("orders").accept(
-                MessageBuilder.withPayload("not-json".getBytes(StandardCharsets.UTF_8)).build());
+        assertThatThrownBy(() -> handler.accept(message))
+                .isInstanceOf(ClassCastException.class);
     }
 
     @Test
@@ -176,22 +182,32 @@ class MessageHandlerRegistryTest {
     }
 
     @Test
-    void convertStringForStringContentTypeWithPojoTargetReturnsRawString() {
+    void stringContentTypeWithPojoTargetFailsLoudlyInsteadOfSilently() {
+        // content-type: string with a POJO handler is a misconfiguration: the raw String
+        // reaches a Message<Order> handler. It now surfaces instead of being logged away.
         AtomicReference<String> captured = new AtomicReference<>();
         TestProcessor processor = new TestProcessor(captured);
         KafkaClusterProperties props = propsFor("orders", "processOrder", "string");
 
         MessageHandlerRegistry registry = new MessageHandlerRegistry(List.of(processor), props);
-        registry.getHandler("orders").accept(MessageBuilder.withPayload("{\"id\":\"o-1\"}").build());
+        Consumer<Message<?>> handler = registry.getHandler("orders");
+        Message<String> message = MessageBuilder.withPayload("{\"id\":\"o-1\"}").build();
+
+        assertThatThrownBy(() -> handler.accept(message))
+                .isInstanceOf(ClassCastException.class);
     }
 
     @Test
-    void convertStringJsonParseFailureFallsBackWithoutCrash() {
+    void unparseableJsonStringFallsBackAndFailsLoudlyInATypedHandler() {
         TestProcessor processor = new TestProcessor(new AtomicReference<>());
         KafkaClusterProperties props = propsFor("orders", "processOrder", "json");
 
         MessageHandlerRegistry registry = new MessageHandlerRegistry(List.of(processor), props);
-        registry.getHandler("orders").accept(MessageBuilder.withPayload("not-json").build());
+        Consumer<Message<?>> handler = registry.getHandler("orders");
+        Message<String> message = MessageBuilder.withPayload("not-json").build();
+
+        assertThatThrownBy(() -> handler.accept(message))
+                .isInstanceOf(ClassCastException.class);
     }
 
     @Test
@@ -210,13 +226,19 @@ class MessageHandlerRegistryTest {
     }
 
     @Test
-    void handlerExceptionIsLoggedAndDoesNotPropagate() {
+    void handlerExceptionPropagatesOnTheRecordPath() {
+        // Swallowing here would commit the offset and advance the watermark for a record
+        // the handler never processed, and the redelivery would look like a duplicate.
         ThrowingProcessor processor = new ThrowingProcessor();
         KafkaClusterProperties props = propsFor("orders", "boom", "json");
 
         MessageHandlerRegistry registry = new MessageHandlerRegistry(List.of(processor), props);
+        Consumer<Message<?>> handler = registry.getHandler("orders");
+        Message<byte[]> message = MessageBuilder.withPayload("{}".getBytes()).build();
 
-        registry.getHandler("orders").accept(MessageBuilder.withPayload("{}".getBytes()).build());
+        assertThatThrownBy(() -> handler.accept(message))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("handler failed");
     }
 
     public static class ThrowingProcessor implements MessageProcessor {

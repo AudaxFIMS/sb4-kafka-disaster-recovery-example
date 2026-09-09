@@ -36,7 +36,7 @@ public class TimestampSeekRebalanceListener implements ConsumerAwareRebalanceLis
         Map<TopicPartition, Long> timestampsToSearch = new HashMap<>();
 
         for (TopicPartition tp : partitions) {
-            Long lastTimestamp = tracker.getLastTimestamp(tp.topic());
+            Long lastTimestamp = tracker.getLastTimestamp(tp.topic(), tp.partition());
             if (lastTimestamp != null) {
                 timestampsToSearch.put(tp, lastTimestamp);
             }

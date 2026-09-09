@@ -10,8 +10,10 @@ import org.springframework.cloud.stream.binder.Binding;
 import org.springframework.cloud.stream.binder.BinderFactory;
 import org.springframework.cloud.stream.binder.ConsumerProperties;
 import org.springframework.cloud.stream.binder.ExtendedConsumerProperties;
+import org.springframework.cloud.stream.binder.ExtendedPropertiesBinder;
 import org.springframework.cloud.stream.binder.kafka.properties.KafkaConsumerProperties;
 import org.springframework.cloud.stream.config.BindingServiceProperties;
+import org.springframework.beans.BeanUtils;
 import org.springframework.context.ApplicationContext;
 import org.springframework.integration.channel.DirectChannel;
 import org.springframework.messaging.Message;
@@ -126,15 +128,12 @@ public class LateBindingInitializer {
                 continue;
             }
 
-            // Create input channel and wire to handler
+            // Create input channel and wire to handler.
+            // Exceptions are deliberately NOT swallowed here: the startup-bound path lets
+            // them reach the container's error handler, and a late-bound cluster must
+            // behave identically or the two diverge after a failover.
             DirectChannel channel = new DirectChannel();
-            channel.subscribe(message -> {
-                try {
-                    handler.accept(message);
-                } catch (Exception e) {
-                    log.error("[{}][{}] Error in late-bound consumer: {}", cluster, consumerName, e.getMessage());
-                }
-            });
+            channel.subscribe(handler::accept);
 
             // Get binding properties from environment
             var bindingProps = bindingServiceProperties.getBindingProperties(bindingName);
@@ -143,25 +142,20 @@ public class LateBindingInitializer {
             if (destination == null) destination = topic;
             if (group == null) group = consumer.getGroup();
 
-            // Create extended consumer properties required by Kafka binder
-            var kafkaConsumerProps = new KafkaConsumerProperties();
-
-            // Apply per-consumer Kafka client properties (deserializer, etc.)
-            Map<String, String> effectiveProps = properties.getEffectiveConsumerProperties(consumer);
-            for (Map.Entry<String, String> entry : effectiveProps.entrySet()) {
-                if (entry.getKey().startsWith("configuration.")) {
-                    kafkaConsumerProps.getConfiguration().put(
-                            entry.getKey().substring("configuration.".length()), entry.getValue());
-                }
-            }
-
+            // Take both property namespaces as Spring Cloud Stream already resolved them
+            // for this binding, so a late-initialized cluster gets exactly the configuration
+            // a startup-initialized one got — including spring.cloud.stream.default.* .
+            // Copying selected keys by hand is what let ack-mode, concurrency, batch-mode
+            // and DLQ settings diverge between clusters.
+            var kafkaConsumerProps = extendedConsumerProperties(binder, bindingName);
             var extendedProps = new ExtendedConsumerProperties<>(kafkaConsumerProps);
-            extendedProps.setAutoStartup(false);
+            BeanUtils.copyProperties(
+                    bindingServiceProperties.getConsumerProperties(bindingName),
+                    extendedProps,
+                    ConsumerProperties.class);
 
-            // Enable native decoding if content-type is native
-            if ("native".equalsIgnoreCase(consumer.getContentType())) {
-                extendedProps.setUseNativeDecoding(true);
-            }
+            // Lifecycle stays with the starter regardless of what was configured.
+            extendedProps.setAutoStartup(false);
 
             // Bind
             var binding = ((Binder<MessageChannel, ExtendedConsumerProperties<KafkaConsumerProperties>, ?>) binder)
@@ -170,6 +164,24 @@ public class LateBindingInitializer {
             lateBindings.put(bindingName, binding);
             log.info("[{}][{}] Created late binding: {}", cluster, consumerName, bindingName);
         }
+    }
+
+    /**
+     * Kafka-specific consumer properties for a binding, as resolved by the binder itself.
+     * Every Kafka binder implements {@link ExtendedPropertiesBinder}; the fallback exists
+     * only so a stubbed or non-extended binder cannot break late initialization.
+     */
+    private static KafkaConsumerProperties extendedConsumerProperties(Binder<?, ?, ?> binder, String bindingName) {
+        if (binder instanceof ExtendedPropertiesBinder<?, ?, ?> extended) {
+            Object props = extended.getExtendedConsumerProperties(bindingName);
+            if (props instanceof KafkaConsumerProperties kafkaProps) {
+                return kafkaProps;
+            }
+        }
+        log.warn("Binder {} does not expose extended consumer properties for '{}' — "
+                        + "Kafka-specific settings (ack-mode, DLQ, client configuration) will not be applied",
+                binder.getClass().getSimpleName(), bindingName);
+        return new KafkaConsumerProperties();
     }
 
     /**
