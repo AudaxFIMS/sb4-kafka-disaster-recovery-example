@@ -1,5 +1,6 @@
 package dev.semeshin.kafkadr.config;
 
+import dev.semeshin.kafkadr.consumer.AckPolicy;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.kafka.listener.ContainerProperties;
@@ -137,6 +138,14 @@ public class KafkaClusterProperties {
         private BatchConfig batch = new BatchConfig();
 
         /**
+         * Acknowledgment settings that have no counterpart in the binder's
+         * {@code KafkaConsumerProperties} and therefore cannot be expressed under
+         * {@code properties}: who acknowledges on the record path, and the
+         * {@code ContainerProperties} knobs the starter's ListenerContainerCustomizer applies.
+         */
+        private AckConfig ack = new AckConfig();
+
+        /**
          * Per-consumer override of kafka-dr.idempotency.enabled. Null means "follow the
          * global flag". Can only narrow it: the IdempotencyStore bean is created based on
          * the global flag, so a consumer cannot switch deduplication on when it is off
@@ -166,6 +175,8 @@ public class KafkaClusterProperties {
         public void setContentType(String contentType) { this.contentType = contentType; }
         public BatchConfig getBatch() { return batch; }
         public void setBatch(BatchConfig batch) { this.batch = batch; }
+        public AckConfig getAck() { return ack; }
+        public void setAck(AckConfig ack) { this.ack = ack; }
         public Boolean getIdempotencyEnabled() { return idempotencyEnabled; }
         public void setIdempotencyEnabled(Boolean idempotencyEnabled) { this.idempotencyEnabled = idempotencyEnabled; }
         public Map<String, Object> getProperties() { return properties; }
@@ -230,6 +241,64 @@ public class KafkaClusterProperties {
         public void setMaxWaitMs(Long maxWaitMs) { this.maxWaitMs = maxWaitMs; }
         public ErrorPolicy getErrorPolicy() { return errorPolicy; }
         public void setErrorPolicy(ErrorPolicy errorPolicy) { this.errorPolicy = errorPolicy; }
+    }
+
+    /**
+     * Acknowledgment settings for a single consumer.
+     *
+     * <p>Everything here is deliberately outside {@code properties}: {@code owner} is the
+     * starter's own concept, and {@code asyncAcks}, {@code syncCommits}, {@code count} and
+     * {@code time} live on {@code ContainerProperties} with no counterpart in
+     * {@code KafkaConsumerProperties}, so YAML cannot reach them through the binder. They
+     * are applied by the ListenerContainerCustomizer, which resolves a container by
+     * (topic, group) — hence the startup check that the pair is unique.
+     */
+    public static class AckConfig {
+
+        /**
+         * Who calls {@code Acknowledgment.acknowledge()} on the record path under
+         * {@code ack-mode: MANUAL} or {@code MANUAL_IMMEDIATE}.
+         *
+         * <p>{@code HANDLER} (default) keeps the commit in application code.
+         * {@code STARTER} moves it into {@link dev.semeshin.kafkadr.consumer.IdempotentConsumer},
+         * which acknowledges once the handler has returned normally and only then advances
+         * the timestamp watermark — the record-path equivalent of what the split batch
+         * consumer has always done.
+         */
+        private AckPolicy.Owner owner = AckPolicy.Owner.HANDLER;
+
+        /**
+         * Maps to {@code ContainerProperties.asyncAcks}: allows the handler to acknowledge
+         * after returning, from another thread. Only meaningful with a manual ack-mode, and
+         * it also suppresses the "handler returned without acknowledging" warning, because
+         * under async acks that is the normal case.
+         */
+        private Boolean asyncAcks;
+
+        /**
+         * Maps to {@code ConsumerProperties.syncCommits}. True by default in spring-kafka,
+         * which means every commit is a synchronous round trip on the consumer thread —
+         * one per record under {@code MANUAL_IMMEDIATE}. False trades that latency for
+         * commits that are confirmed asynchronously.
+         */
+        private Boolean syncCommits;
+
+        /** Maps to {@code ContainerProperties.ackCount}; applies to ack-mode COUNT and COUNT_TIME. */
+        private Integer count;
+
+        /** Maps to {@code ContainerProperties.ackTime} in ms; applies to ack-mode TIME and COUNT_TIME. */
+        private Long time;
+
+        public AckPolicy.Owner getOwner() { return owner; }
+        public void setOwner(AckPolicy.Owner owner) { this.owner = owner; }
+        public Boolean getAsyncAcks() { return asyncAcks; }
+        public void setAsyncAcks(Boolean asyncAcks) { this.asyncAcks = asyncAcks; }
+        public Boolean getSyncCommits() { return syncCommits; }
+        public void setSyncCommits(Boolean syncCommits) { this.syncCommits = syncCommits; }
+        public Integer getCount() { return count; }
+        public void setCount(Integer count) { this.count = count; }
+        public Long getTime() { return time; }
+        public void setTime(Long time) { this.time = time; }
     }
 
     /**
@@ -397,6 +466,17 @@ public class KafkaClusterProperties {
             }
         }
         return null;
+    }
+
+    /**
+     * The record-path acknowledgment policy: the configured ack-mode plus the starter's own
+     * {@code ack} settings. Given to {@link dev.semeshin.kafkadr.consumer.IdempotentConsumer},
+     * which uses it to decide who acknowledges and whether the commit is observable enough
+     * for the timestamp watermark to follow it.
+     */
+    public AckPolicy resolveAckPolicy(ConsumerConfig consumer) {
+        AckConfig ack = consumer.getAck() == null ? new AckConfig() : consumer.getAck();
+        return new AckPolicy(resolveAckMode(consumer), ack.getOwner(), Boolean.TRUE.equals(ack.getAsyncAcks()));
     }
 
     /**

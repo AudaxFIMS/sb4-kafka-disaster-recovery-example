@@ -162,6 +162,43 @@ class KafkaDrAutoConfigurationTest {
         assertThat(configure(customizer, "unknown", "g3").isSubBatchPerPartition()).isFalse();
     }
 
+    @Test
+    void customizerAppliesTheAckSettingsTheBinderCannotExpress() {
+        KafkaClusterProperties.ConsumerConfig consumer = consumerConfig("orders", "orders", "g1", false);
+        consumer.getAck().setAsyncAcks(true);
+        consumer.getAck().setSyncCommits(false);
+        consumer.getAck().setCount(50);
+        consumer.getAck().setTime(2000L);
+
+        // None of these exist in KafkaConsumerProperties, so YAML cannot reach them through
+        // the binder — the customizer is the only way in.
+        ContainerProperties props = configure(
+                new KafkaDrAutoConfiguration().kafkaDrContainerCustomizer(
+                        propertiesWith(consumer), new LastProcessedTimestampTracker(null)),
+                "orders", "g1");
+
+        assertThat(props.isAsyncAcks()).isTrue();
+        assertThat(props.isSyncCommits()).isFalse();
+        assertThat(props.getAckCount()).isEqualTo(50);
+        assertThat(props.getAckTime()).isEqualTo(2000L);
+    }
+
+    @Test
+    void ackSettingsLeftUnsetKeepTheSpringKafkaDefaults() {
+        ContainerProperties defaults = new ContainerProperties("orders");
+
+        ContainerProperties props = configure(
+                new KafkaDrAutoConfiguration().kafkaDrContainerCustomizer(
+                        propertiesWith(consumerConfig("orders", "orders", "g1", false)),
+                        new LastProcessedTimestampTracker(null)),
+                "orders", "g1");
+
+        assertThat(props.isAsyncAcks()).isEqualTo(defaults.isAsyncAcks());
+        assertThat(props.isSyncCommits()).isEqualTo(defaults.isSyncCommits());
+        assertThat(props.getAckCount()).isEqualTo(defaults.getAckCount());
+        assertThat(props.getAckTime()).isEqualTo(defaults.getAckTime());
+    }
+
     private static ContainerProperties configure(
             ListenerContainerCustomizer<AbstractMessageListenerContainer<?, ?>> customizer,
             String destination, String group) {

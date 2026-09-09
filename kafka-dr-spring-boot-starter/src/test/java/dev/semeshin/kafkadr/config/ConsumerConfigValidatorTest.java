@@ -2,6 +2,7 @@ package dev.semeshin.kafkadr.config;
 
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.BatchConfig;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.ConsumerConfig;
+import dev.semeshin.kafkadr.consumer.AckPolicy;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -163,6 +164,92 @@ class ConsumerConfigValidatorTest {
         consumer.setContentType("native");
 
         assertThatCode(() -> ConsumerConfigValidator.validate(props(consumer))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void starterOwnedAcknowledgmentIsRejectedForBatchingConsumers() {
+        ConsumerConfig consumer = consumer("orders", "order-events", "g");
+        consumer.getBatch().setEnabled(true);
+        consumer.getAck().setOwner(AckPolicy.Owner.STARTER);
+        consumer.setProperties(Map.of("ack-mode", "MANUAL_IMMEDIATE"));
+
+        // In split mode the starter already computes the commit point, and in standard mode
+        // the handler owns the envelope. Ownership is only a choice on the record path.
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(props(consumer)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ack.owner=starter")
+                .hasMessageContaining("batching enabled");
+    }
+
+    @Test
+    void starterOwnedAcknowledgmentIsAcceptedOnTheRecordPath() {
+        ConsumerConfig consumer = consumer("orders", "order-events", "g");
+        consumer.getAck().setOwner(AckPolicy.Owner.STARTER);
+        consumer.setProperties(Map.of("ack-mode", "MANUAL"));
+
+        assertThatCode(() -> ConsumerConfigValidator.validate(props(consumer))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void starterOwnedAcknowledgmentWithoutAManualAckModeIsOnlyWarnedAbout() {
+        ConsumerConfig consumer = consumer("orders", "order-events", "g");
+        consumer.getAck().setOwner(AckPolicy.Owner.STARTER);
+
+        // Nothing is lost: the container still commits once the listener returns.
+        assertThatCode(() -> ConsumerConfigValidator.validate(props(consumer))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void manualAckModeInRecordModeIsAcceptedWithAWarning() {
+        ConsumerConfig consumer = consumer("orders", "order-events", "g");
+        consumer.setProperties(Map.of("ack-mode", "MANUAL_IMMEDIATE"));
+
+        // The handler owning the commit is legitimate; whether it actually acknowledges is
+        // reported by IdempotentConsumer at runtime.
+        assertThatCode(() -> ConsumerConfigValidator.validate(props(consumer))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void nonPositiveAckCountAndAckTimeAreRejected() {
+        ConsumerConfig withCount = consumer("orders", "order-events", "g");
+        withCount.getAck().setCount(0);
+
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(props(withCount)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ack.count=0");
+
+        ConsumerConfig withTime = consumer("orders", "order-events", "g");
+        withTime.getAck().setTime(0L);
+
+        // spring-kafka asserts this inside the binder child context, which on a standby
+        // cluster is only built at failover.
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(props(withTime)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ack.time=0");
+    }
+
+    @Test
+    void containerAckSettingsThatDoNotApplyAreOnlyWarnedAbout() {
+        ConsumerConfig consumer = consumer("orders", "order-events", "g");
+        consumer.getAck().setCount(100);
+        consumer.getAck().setTime(5000L);
+        consumer.getAck().setAsyncAcks(true);
+        consumer.setProperties(Map.of("ack-mode", "BATCH"));
+
+        assertThatCode(() -> ConsumerConfigValidator.validate(props(consumer))).doesNotThrowAnyException();
+    }
+
+    @Test
+    void asyncAcksWithSeekByTimestampIsAcceptedWithAWarning() {
+        ConsumerConfig consumer = consumer("orders", "order-events", "g");
+        consumer.getAck().setAsyncAcks(true);
+        consumer.setProperties(Map.of("ack-mode", "MANUAL"));
+        KafkaClusterProperties props = props(consumer);
+        props.getFailover().setSeekByTimestamp(true);
+
+        // The acknowledgment arrives after the handler returns, so the watermark can never
+        // follow it and seek-by-timestamp silently degrades to committed offsets.
+        assertThatCode(() -> ConsumerConfigValidator.validate(props)).doesNotThrowAnyException();
     }
 
     private static KafkaClusterProperties props(ConsumerConfig... consumers) {

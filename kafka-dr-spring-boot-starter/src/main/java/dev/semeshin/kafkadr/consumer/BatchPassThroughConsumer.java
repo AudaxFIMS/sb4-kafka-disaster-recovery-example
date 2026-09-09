@@ -17,8 +17,9 @@ import java.util.function.Consumer;
  * this mode behave like ordinary Spring Cloud Stream.
  *
  * <p>The watermark is the maximum timestamp per partition across the batch, advanced only
- * after the handler returns normally. It is necessarily coarser than in split mode: the
- * starter cannot know which records the handler actually completed.
+ * after the handler returns normally and, under a manual ack-mode, only once the handler has
+ * acknowledged — the commit is what the watermark follows on every path. It is necessarily
+ * coarser than in split mode: the starter cannot know which records the handler completed.
  */
 public class BatchPassThroughConsumer implements Consumer<Message<?>> {
 
@@ -28,15 +29,30 @@ public class BatchPassThroughConsumer implements Consumer<Message<?>> {
     private final String clusterName;
     private final Consumer<Message<?>> delegate;
     private final LastProcessedTimestampTracker timestampTracker;
+    private final AckObserver ackObserver;
 
+    /** Container-managed acknowledgment: the commit follows the listener returning. */
     public BatchPassThroughConsumer(String consumerName,
                                     String clusterName,
                                     Consumer<Message<?>> delegate,
                                     LastProcessedTimestampTracker timestampTracker) {
+        this(consumerName, clusterName, delegate, timestampTracker, AckPolicy.CONTAINER);
+    }
+
+    public BatchPassThroughConsumer(String consumerName,
+                                    String clusterName,
+                                    Consumer<Message<?>> delegate,
+                                    LastProcessedTimestampTracker timestampTracker,
+                                    AckPolicy ackPolicy) {
         this.consumerName = consumerName;
         this.clusterName = clusterName;
         this.delegate = delegate;
         this.timestampTracker = timestampTracker;
+        // Ownership is not configurable in this mode: the handler receives the envelope, so
+        // the acknowledgment inside it is the handler's by definition.
+        this.ackObserver = new AckObserver(ackPolicy, clusterName, consumerName,
+                "Call Acknowledgment.acknowledge() on the kafka_acknowledgment header of the batch "
+                        + "envelope before returning, or use batch.mode=split and let the starter commit.");
     }
 
     @Override
@@ -47,9 +63,10 @@ public class BatchPassThroughConsumer implements Consumer<Message<?>> {
                     clusterName, consumerName, ((java.util.List<?>) envelope.getPayload()).size());
         }
 
-        delegate.accept(envelope);
+        TrackingAcknowledgment ack = ackObserver.track(envelope);
+        delegate.accept(ackObserver.deliver(envelope, ack));
 
-        if (timestampTracker == null) {
+        if (timestampTracker == null || !ackObserver.commitObserved(ack)) {
             return;
         }
         if (batch) {

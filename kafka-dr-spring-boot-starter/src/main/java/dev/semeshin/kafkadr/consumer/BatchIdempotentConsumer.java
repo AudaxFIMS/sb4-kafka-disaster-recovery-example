@@ -9,7 +9,6 @@ import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 
-import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -77,7 +76,14 @@ public class BatchIdempotentConsumer implements Consumer<Message<?>> {
                 clusterName, consumerName, records.size(), duplicates, toProcess.size());
 
         if (toProcess.isEmpty()) {
-            advanceWatermarks(records, records.size());
+            // Nothing reaches the handler, so under a manual ack-mode nobody would commit
+            // this batch: the offset would stall on an all-duplicate stretch, which is the
+            // normal state right after a failover with replicated data. The watermark
+            // follows that commit, exactly as it does for a processed batch.
+            int ackedThrough = acknowledge(envelope, records.size(), records.size() - 1, true);
+            if (ackedThrough >= 0) {
+                advanceWatermarks(records, ackedThrough + 1);
+            }
             return;
         }
 

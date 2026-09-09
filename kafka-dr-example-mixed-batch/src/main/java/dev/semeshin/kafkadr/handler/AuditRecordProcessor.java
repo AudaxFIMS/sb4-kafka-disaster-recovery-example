@@ -1,6 +1,7 @@
 package dev.semeshin.kafkadr.handler;
 
 import dev.semeshin.kafkadr.consumer.MessageProcessor;
+import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.support.KafkaHeaders;
@@ -25,7 +26,9 @@ public class AuditRecordProcessor implements MessageProcessor {
     private final AtomicInteger processed = new AtomicInteger();
 
     public void processAudit(Message<String> message) {
-        Object key = message.getHeaders().get(KafkaHeaders.RECEIVED_KEY);
+        // The raw Kafka key is a byte[]; the starter's helper decodes it the same way its
+        // own logs do, so a record can be followed across both.
+        String key = IdempotencyStore.kafkaKey(message, null);
         Object partition = message.getHeaders().get(KafkaHeaders.RECEIVED_PARTITION);
 
         log.info("Audit [{}] key={}: {} (total {})",

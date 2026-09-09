@@ -140,8 +140,24 @@ class BatchAcknowledgmentTest {
         new BatchIdempotentConsumer("orders", "primary", store, complete(), tracker,
                 AckMode.MANUAL_IMMEDIATE).accept(batchOf(3));
 
-        // Nothing to do, but the offsets must still move or the batch is polled forever.
+        // Nothing to do, but the offsets must still move or the batch is polled forever —
+        // and under a manual ack-mode only an explicit acknowledgment moves them.
+        verify(ack).acknowledge();
         assertThat(tracker.getLastTimestamp("orders", 0)).isEqualTo(1002L);
+    }
+
+    @Test
+    void duplicateOnlyBatchLeavesTheWatermarkAloneUnderScheduledCommitModes() {
+        InMemoryIdempotencyStore store = new InMemoryIdempotencyStore();
+        IntStream.range(0, 3).forEach(i -> store.tryProcess("primary", "orders", record(i)));
+
+        new BatchIdempotentConsumer("orders", "primary", store, complete(), tracker,
+                AckMode.COUNT).accept(batchOf(3));
+
+        // The commit happens on the container's own schedule, which the starter cannot
+        // observe — the same rule that applies to a batch it actually processed.
+        verifyNoInteractions(ack);
+        assertThat(tracker.getAllTimestamps()).isEmpty();
     }
 
     // --- fixtures -------------------------------------------------------------

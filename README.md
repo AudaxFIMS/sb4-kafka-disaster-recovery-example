@@ -108,7 +108,7 @@ The project is structured as a multi-module Maven build:
 - **Producer cache cleanup** — dead cluster producers are closed to prevent reconnect noise
 - **Idempotent message processing** — pluggable deduplication via `IdempotencyStore` interface; the store receives the full message, so custom implementations can dedup by any header or payload data (in-memory key-based default, Redis example included)
 - **Batch consumption** — per-consumer `batch.enabled`; the starter unpacks the batch so existing `Message<T>` handlers, deduplication and timestamp watermarks keep working unchanged, or hands over the raw envelope in standard Spring Cloud Stream form
-- **Manual acknowledgment in batch mode** — the starter owns the commit: it acknowledges the successful prefix, releases idempotency marks for the rest, and only then advances the watermark, so seek-by-timestamp never passes an uncommitted offset
+- **Manual acknowledgment on both paths** — in batch mode the starter owns the commit: it acknowledges the successful prefix, releases idempotency marks for the rest, and only then advances the watermark, so seek-by-timestamp never passes an uncommitted offset. On the record path the commit is the handler's by default, or the starter's with `ack.owner: starter`, and the watermark follows it either way
 - **Batch producer** — `sendBatch()` makes one failover decision for the whole batch and moves only the unsent tail to the next cluster
 - **Poison-pill protection** — wrap any deserializer in `ErrorHandlingDeserializer` via per-consumer `properties.configuration`; malformed messages are logged and skipped (or sent to a DLQ) without reaching your handler
 - **Restart-safe failback gate** — pluggable `FailoverStateStore` persists which cluster the app is pinned to after a failover plus the failover timestamp; `failback-after` is honored across restarts (in-memory default, Redis example included)
@@ -138,7 +138,10 @@ kafka-dr-spring-boot-starter/             # Framework (reusable JAR)
     consumer/
       MessageProcessor.java                # Marker interface — implement in your app
       MessageHandlerRegistry.java          # Discovers handlers, resolves shapes, converts payloads
-      IdempotentConsumer.java              # Deduplication wrapper + timestamp tracking
+      IdempotentConsumer.java              # Deduplication wrapper + record-path commit and watermark
+      AckPolicy.java                       # Who acknowledges on the record path, and when it is observable
+      AckObserver.java                     # Makes a handler-owned commit observable to the watermark
+      TrackingAcknowledgment.java          # Delegating Acknowledgment that reports whether it was used
       BatchIdempotentConsumer.java         # Batch consumer: dedup, commit point, watermark
       BatchPassThroughConsumer.java        # Batch consumer for mode: standard (raw envelope)
       BatchMessages.java                   # Unpacks the batch envelope into per-record messages
@@ -172,6 +175,7 @@ kafka-dr-example/                          # Example application
     handler/
       DemoAndOrderMessageProcessor.java    # Example: implements MessageProcessor
       PaymentAndRawDataMessageProcessor.java
+      LedgerMessageProcessor.java          # Example: manual commit with ack.owner: starter
     controller/
       MessageProducerController.java       # REST API (example)
     model/
@@ -182,6 +186,8 @@ kafka-dr-example/                          # Example application
     PaymentEvent.avsc                      # Avro schema
   src/main/resources/
     application.yml
+  src/test/java/dev/semeshin/kafkadr/
+    AcknowledgmentConfigurationTest.java   # Asserts the shipped YAML really demonstrates ack.owner: starter
 
 kafka-dr-example-timestamp-seek/           # Example with timestamp-based seek on failover
   src/main/java/dev/semeshin/kafkadr/
@@ -754,6 +760,8 @@ kafka-dr:
       group: my-group
       handler: processOrder          # Method name in any MessageProcessor bean
       content-type: json             # json | string | bytes | native
+      ack:                           # Optional — takes effect only with ack-mode MANUAL*
+        owner: starter               # who commits: handler (default) | starter
       properties:
         configuration:
           value.deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
@@ -786,6 +794,8 @@ Per-consumer `properties` are routed into the two namespaces Spring Cloud Stream
 A key that belongs to neither set is almost certainly a typo: it is routed to the Kafka namespace (where the binder ignores it) and reported with a warning naming the consumer, so it no longer disappears silently.
 
 A few keys are owned by the starter and rejected if set by hand, because overriding them breaks binding lifecycle or payload handling: `auto-startup`, `batch-mode`, `use-native-decoding`, `destination`, `group`, `binder`. The error message names the setting to use instead.
+
+Acknowledgment has a block of its own, `ack`, for the settings `properties` cannot carry — who commits on the record path, and the `ContainerProperties` knobs the binder does not expose. See [Manual Acknowledgment](#manual-acknowledgment).
 
 This map form is also the format that works on Kubernetes / EKS without `[]` indexes:
 
@@ -1081,7 +1091,97 @@ Conversion failures are treated the same way as handler failures and carry the r
         ack-mode: MANUAL_IMMEDIATE
 ```
 
-In `split` mode the **starter owns the commit** — it computes how far the batch may be acknowledged, acknowledges it, and only then advances the timestamp watermark. Handlers never touch `Acknowledgment`. In `standard` mode the handler owns it, and must call `acknowledge()` itself or offsets are never committed.
+Everything below applies only when `ack-mode` is `MANUAL` or `MANUAL_IMMEDIATE`. Without it
+the container commits as soon as the listener returns, `ack.owner` does nothing, and the
+`kafka_acknowledgment` header is not even present — a handler has nothing to acknowledge and
+must not try.
+
+Who calls `acknowledge()` depends on the path, and only the record path leaves it open:
+
+| Path | Owner |
+|---|---|
+| record, `ack.owner: handler` *(default)* | the handler, through the `kafka_acknowledgment` header |
+| record, `ack.owner: starter` | the starter, once the handler has returned normally |
+| batch `split` | the starter, which computes how far the batch may be committed |
+| batch `standard` | the handler, which receives the raw envelope |
+
+In `split` mode the **starter owns the commit** — it computes how far the batch may be acknowledged, acknowledges it, and only then advances the timestamp watermark. Handlers never touch `Acknowledgment`. In `standard` mode the handler owns it, and must call `acknowledge()` itself or offsets are never committed; the watermark for that batch waits for the call, and a handler that returns without acknowledging is reported once in the log.
+
+#### Record mode
+
+With `ack.owner: handler` the handler reads the header and commits when it decides to:
+
+```yaml
+kafka-dr:
+  consumers:
+    orders-consumer:
+      topic: order-events
+      group: orders
+      handler: processOrder
+      properties:
+        ack-mode: MANUAL         # MANUAL_IMMEDIATE commits synchronously on every call
+```
+
+```java
+public void processOrder(Message<OrderEvent> message) {
+    handle(message.getPayload());
+    message.getHeaders()
+            .get(KafkaHeaders.ACKNOWLEDGMENT, Acknowledgment.class)
+            .acknowledge();
+}
+```
+
+`ack.owner: starter` moves that call into the starter, which acknowledges after the handler
+returns normally and only then advances the watermark — the record-path equivalent of what
+the split batch consumer has always done:
+
+```yaml
+      ack:
+        owner: starter
+      properties:
+        ack-mode: MANUAL
+```
+
+A running version of this is the `ledger-events-consumer` in `kafka-dr-example`: the topic
+commits manually, and `LedgerMessageProcessor` contains no acknowledgment code at all.
+
+```bash
+curl -X POST "http://localhost:8080/api/messages/ledger-events?message=entry-1"
+```
+
+A handler that throws still propagates: the idempotency mark is rolled back, nothing is
+acknowledged, and Kafka redelivers.
+
+A record the idempotency store recognises as already processed is acknowledged by the
+starter under either owner, because the handler never sees it and could not commit it. The
+watermark stays where the earlier delivery left it. Without that, a partition whose tail is
+all duplicates — the normal state right after a failover with replicated data — would keep
+its committed offset behind those records until their marks expire, and the next redelivery
+would be processed for real. The same applies to a fully deduplicated batch in `split` mode.
+
+`MANUAL_IMMEDIATE` exists for partial batch commits and buys nothing on the record path — it
+issues a synchronous commit per record. `MANUAL` queues the acknowledgment and the container
+commits it on the next poll, one round trip per poll instead of per record.
+
+#### What advances the watermark in record mode
+
+| `ack-mode` | Commit | Timestamp watermark |
+|---|---|---|
+| `BATCH` *(default)* / `RECORD` | Container, as soon as the listener returns | Advanced |
+| `MANUAL` / `MANUAL_IMMEDIATE` | Whoever owns the acknowledgment | Advanced **only** if `acknowledge()` was called |
+| `TIME` / `COUNT` / `COUNT_TIME` | On the container's own schedule | **Not advanced** |
+
+The watermark follows the commit, never the handler. A handler that returns without
+acknowledging leaves it where it was, and says so once per consumer in the log:
+
+```
+[primary][orders-consumer] Handler returned without acknowledging under ack-mode=MANUAL.
+Offsets are not committed and the timestamp watermark stays put.
+```
+
+Deliberate exceptions to that warning: `nack()`, which is a redelivery request rather than a
+forgotten commit, and `ack.async-acks: true`, which is the supported way to acknowledge later
+from another thread.
 
 #### What each mode does in batch mode
 
@@ -1089,7 +1189,7 @@ In `split` mode the **starter owns the commit** — it computes how far the batc
 |---|---|---|
 | `BATCH` *(default)* | Container, after the listener returns — all or nothing | Whole batch on success; **not advanced** on failure |
 | `RECORD` | Not applied — the binder skips it in batch mode, leaving the `BATCH` default | Same as `BATCH` |
-| `MANUAL` | Whole batch only | Frozen on partial failure — nothing was committed |
+| `MANUAL` | Whole batch only | Frozen on partial failure — nothing was committed. In `standard` mode it follows the handler's own `acknowledge()` |
 | `MANUAL_IMMEDIATE` | Successful prefix, immediately | Follows the acknowledged index |
 | `TIME` / `COUNT` / `COUNT_TIME` | On the container's own schedule | **Not advanced** |
 
@@ -1130,11 +1230,49 @@ public BatchOutcome processOrders(List<Message<OrderEvent>> messages) {
 
 The starter commits up to the first `retry`, releases the marks of every retried record, and advances the watermark to the acknowledged index. Records marked `done` *after* a retried one are redelivered — offsets move as a watermark — and the store is what remembers they are already finished.
 
+#### Container settings the binder cannot express
+
+`asyncAcks`, `syncCommits`, `ackCount` and `ackTime` live on spring-kafka's
+`ContainerProperties` and have no counterpart in `KafkaConsumerProperties`, so they cannot be
+set through `properties`. They get their own block, applied by the starter's
+`ListenerContainerCustomizer`:
+
+```yaml
+      ack:
+        owner: starter        # handler (default) | starter — record path only
+        async-acks: false     # allow the handler to acknowledge later, from another thread
+        sync-commits: true    # false removes the commit round trip from the consumer thread
+        count: 100            # ack-mode COUNT / COUNT_TIME
+        time: 5000            # ack-mode TIME / COUNT_TIME, in ms
+```
+
+| Setting | Maps to | Applies with |
+|---|---|---|
+| `owner` | the starter itself | record path, `ack-mode: MANUAL` / `MANUAL_IMMEDIATE` |
+| `async-acks` | `ContainerProperties.asyncAcks` | `MANUAL` / `MANUAL_IMMEDIATE` |
+| `sync-commits` | `ConsumerProperties.syncCommits` | any mode |
+| `count` | `ContainerProperties.ackCount` | `COUNT` / `COUNT_TIME` |
+| `time` | `ContainerProperties.ackTime` | `TIME` / `COUNT_TIME` |
+
+Anything unset keeps the spring-kafka default. A setting that cannot apply to the configured
+`ack-mode` is reported at startup and ignored; `count` or `time` at zero or below is rejected
+there, because spring-kafka's own assertion would otherwise fire inside a binder child
+context — on a standby cluster, that is only built at failover.
+
+`async-acks` has one consequence worth stating: the acknowledgment arrives after the handler
+has returned, so the starter never observes the commit and the timestamp watermark is never
+advanced for that consumer. Seek-by-timestamp then falls back to committed offsets after a
+failover — more redelivery, no loss. The combination is reported at startup when
+`failover.seek-by-timestamp` is on.
+
 #### Constraints worth knowing
 
 - **`MANUAL` + `fail-batch` is rejected at startup.** Partial acknowledgment requires `MANUAL_IMMEDIATE`; without it the successful prefix cannot be committed and every failure reprocesses the whole batch.
-- **Acknowledgment happens on the consumer thread.** `parallelStream()` inside a handler is fine; handing the batch to an executor and acknowledging later is not.
-- **`MANUAL_IMMEDIATE` commits synchronously on each call.** In batch mode that is one or two commits per poll — effectively free.
+- **`ack.owner: starter` is rejected with batching enabled.** Ownership is not a choice there: `split` is acknowledged by the starter and `standard` by the handler that receives the envelope.
+- **Acknowledgment happens on the consumer thread.** `parallelStream()` inside a handler is fine; handing the work to an executor and acknowledging later needs `ack.async-acks: true`.
+- **`MANUAL_IMMEDIATE` commits synchronously on each call.** In batch mode that is one or two commits per poll — effectively free. On the record path it is one commit per record; prefer `MANUAL`.
+- **`ack.async-acks: true` turns off the timestamp watermark.** The commit happens after the handler returns, so the starter cannot observe it; seek-by-timestamp falls back to committed offsets.
+- **Auto-commit is already off.** spring-kafka sets `enable.auto.commit=false` unless it is configured explicitly, so a manual ack-mode moves the commit point rather than turning auto-commit off.
 
 ### Producers
 
@@ -1539,7 +1677,7 @@ Cluster switch: primary -> secondary
 
 Watermarks are tracked **per (topic, partition)**. A per-topic watermark is the maximum across partitions, which would seek a lagging partition past records it never processed.
 
-The watermark follows what was **committed**, not what was processed. With manual acknowledgment a batch can be handled and acknowledged at different moments; advancing the watermark first would make the seek skip records whose offsets never landed, and nothing would redeliver them. When a partition has no watermark — nothing processed yet, or an `ack-mode` whose commits the starter cannot observe — the seek is skipped and the consumer falls back to committed offsets.
+The watermark follows what was **committed**, not what was processed. With manual acknowledgment a batch can be handled and acknowledged at different moments; advancing the watermark first would make the seek skip records whose offsets never landed, and nothing would redeliver them. When a partition has no watermark — nothing processed yet, or an `ack-mode` whose commits the starter cannot observe, such as `TIME` or `COUNT` on either path — the seek is skipped and the consumer falls back to committed offsets.
 
 > This mechanism assumes topic names are identical across clusters. The bundled MirrorMaker 2 configuration uses `IdentityReplicationPolicy` for that reason; switching to `DefaultReplicationPolicy`, which prefixes topics with the source cluster alias, silently breaks the lookup.
 
@@ -1577,7 +1715,10 @@ DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=171400320000
 | Binding properties routed by reflecting over Spring Cloud Stream's own classes | Core and Kafka-extension property sets are disjoint; deriving the routing table from the classes means it cannot drift on upgrade, and a key in neither set is reported as a probable typo instead of vanishing |
 | Batch envelope unpacked back into per-record messages | Keeps `IdempotencyStore`, key extraction, watermarks and existing `Message<T>` handlers working unchanged; batching becomes a transport setting rather than a second API |
 | Partial commits only under `MANUAL_IMMEDIATE` | Spring Integration wraps the exception before `DefaultErrorHandler` sees it, so `BatchListenerFailedException` cannot drive a partial commit from inside a Spring Cloud Stream function; verified against a live broker. Under container-managed ack modes the batch is replayed in full and the watermark stays put |
-| Watermark advanced by commit, never by processing | With manual acknowledgment the two happen at different moments; a watermark ahead of the committed offset makes seek-by-timestamp skip records nothing will redeliver |
+| Duplicates acknowledged by the starter | A deduplicated record never reaches the handler, so under a manual ack-mode nobody else can commit it; leaving it unacknowledged stalls the committed offset on the all-duplicate stretch a failover produces, and once the marks expire the redelivery is processed for real |
+| Watermark advanced by commit, never by processing | With manual acknowledgment the two happen at different moments; a watermark ahead of the committed offset makes seek-by-timestamp skip records nothing will redeliver. Applies to the record path too: the acknowledgment is wrapped so the commit is observable, and a handler that returns without acknowledging leaves the watermark alone |
+| Acknowledgment ownership is explicit (`ack.owner`) | The record path is the only one where it is a choice; making it configuration rather than convention lets the starter acknowledge and advance the watermark in one place, and lets a forgotten `acknowledge()` be reported instead of silently stalling the consumer group |
+| Container-only settings exposed as `ack.*` | `asyncAcks`, `syncCommits`, `ackCount` and `ackTime` exist on `ContainerProperties` but not in `KafkaConsumerProperties`, so binder YAML cannot reach them; the starter already owns the single `ListenerContainerCustomizer` the binder accepts |
 | Sparse completion kept in the idempotency store, not in offsets | Kafka commits a per-partition watermark, so an arbitrary subset cannot be acknowledged; `BatchOutcome` verdicts map onto a contiguous commit plus the store as the "already done" set |
 | Conversion failures in batch mode throw instead of falling back | Substituting a raw `String` would put a foreign type into a `List<T>` and surface as a `ClassCastException` inside business logic, far from the record that caused it |
 | `sendBatch` abandons a dead cluster after the first failed message | One message proves the cluster is gone; retrying the ladder for the rest costs `size × failure-threshold` doomed attempts before the failover |

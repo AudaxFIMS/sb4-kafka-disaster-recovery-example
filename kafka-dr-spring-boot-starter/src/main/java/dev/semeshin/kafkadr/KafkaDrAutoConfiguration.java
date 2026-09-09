@@ -16,6 +16,7 @@ import org.springframework.cloud.stream.config.ListenerContainerCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.kafka.listener.AbstractMessageListenerContainer;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 import java.util.HashMap;
@@ -57,7 +58,7 @@ public class KafkaDrAutoConfiguration {
      * context fail to start — so everything the starter needs to do to a listener container
      * lives here rather than in one bean per concern.
      *
-     * <p>Two things happen:
+     * <p>Three things happen:
      * <ul>
      *   <li>with {@code failover.seek-by-timestamp}, the rebalance listener that seeks each
      *       assigned partition to its last committed timestamp;</li>
@@ -66,6 +67,9 @@ public class KafkaDrAutoConfiguration {
      *       prefix for every partition behind it — those records are redelivered and
      *       deduplicated for nothing. It lives on ContainerProperties and has no counterpart
      *       in KafkaConsumerProperties, so it cannot be set through YAML.</li>
+     *   <li>the {@code kafka-dr.consumers.<name>.ack} settings — {@code async-acks},
+     *       {@code sync-commits}, {@code count} and {@code time} — which are in the same
+     *       position: real container settings the binder's properties cannot express.</li>
      * </ul>
      *
      * <p>The customizer only sees destination and group, hence the index — and hence the
@@ -89,9 +93,38 @@ public class KafkaDrAutoConfiguration {
             }
             KafkaClusterProperties.ConsumerConfig consumer =
                     byDestinationAndGroup.get(destination + "|" + group);
-            if (consumer != null && consumer.getBatch().isEnabled()) {
+            if (consumer == null) {
+                return;
+            }
+            if (consumer.getBatch().isEnabled()) {
                 container.getContainerProperties().setSubBatchPerPartition(true);
             }
+            applyAckSettings(container.getContainerProperties(), consumer.getAck());
         };
+    }
+
+    /**
+     * Container-level acknowledgment settings. Each is left alone unless configured, so a
+     * consumer that says nothing keeps the spring-kafka defaults. Values are validated at
+     * startup by ConsumerConfigValidator; ackCount and ackTime would otherwise fail here
+     * with spring-kafka's own assertion, far from the configuration that caused it.
+     */
+    private static void applyAckSettings(ContainerProperties container,
+                                         KafkaClusterProperties.AckConfig ack) {
+        if (ack == null) {
+            return;
+        }
+        if (ack.getAsyncAcks() != null) {
+            container.setAsyncAcks(ack.getAsyncAcks());
+        }
+        if (ack.getSyncCommits() != null) {
+            container.setSyncCommits(ack.getSyncCommits());
+        }
+        if (ack.getCount() != null) {
+            container.setAckCount(ack.getCount());
+        }
+        if (ack.getTime() != null) {
+            container.setAckTime(ack.getTime());
+        }
     }
 }

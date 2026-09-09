@@ -1,10 +1,6 @@
 package dev.semeshin.kafkadr.config;
 
-import dev.semeshin.kafkadr.consumer.BatchIdempotentConsumer;
-import dev.semeshin.kafkadr.consumer.BatchPassThroughConsumer;
-import dev.semeshin.kafkadr.consumer.IdempotentConsumer;
-import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
-import dev.semeshin.kafkadr.consumer.MessageHandlerRegistry;
+import dev.semeshin.kafkadr.consumer.*;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,7 +13,6 @@ import org.springframework.context.EnvironmentAware;
 import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.MapPropertySource;
-import org.springframework.messaging.Message;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -267,11 +262,13 @@ public class DynamicBindingRegistrar implements BeanDefinitionRegistryPostProces
                     KafkaClusterProperties.BatchConfig batch = consumer.getBatch();
                     if (!batch.isEnabled()) {
                         return new IdempotentConsumer(consumerName, cluster, store,
-                                handlerRegistry.getHandler(consumerName), tracker);
+                                handlerRegistry.getHandler(consumerName), tracker,
+                                props.resolveAckPolicy(consumer));
                     }
                     if (batch.getMode() == KafkaClusterProperties.BatchConfig.Mode.STANDARD) {
                         return new BatchPassThroughConsumer(consumerName, cluster,
-                                handlerRegistry.getEnvelopeHandler(consumerName), tracker);
+                                handlerRegistry.getEnvelopeHandler(consumerName), tracker,
+                                props.resolveAckPolicy(consumer));
                     }
                     return new BatchIdempotentConsumer(consumerName, cluster, store,
                             handlerRegistry.getBatchHandler(consumerName), tracker,

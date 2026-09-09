@@ -3,7 +3,9 @@ package dev.semeshin.kafkadr.config;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.ClusterConfig;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.ConsumerConfig;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.ProducerConfig;
+import dev.semeshin.kafkadr.consumer.AckPolicy;
 import org.junit.jupiter.api.Test;
+import org.springframework.kafka.listener.ContainerProperties;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -203,6 +205,50 @@ class KafkaClusterPropertiesTest {
         assertThat(props.getHealthCheck().isDeepProbe()).isTrue();
         assertThat(props.getHealthCheck().getDeepProbeMinNodes()).isEqualTo(2);
         assertThat(props.getHealthCheck().getDeepProbeMinIsr()).isEqualTo(3);
+    }
+
+    @Test
+    void ackPolicyCombinesTheBinderAckModeWithTheStarterOwnSettings() {
+        KafkaClusterProperties props = new KafkaClusterProperties();
+        ConsumerConfig consumer = new ConsumerConfig();
+        consumer.setName("orders");
+        consumer.setProperties(Map.of("ack-mode", "MANUAL_IMMEDIATE"));
+        consumer.getAck().setOwner(AckPolicy.Owner.STARTER);
+        consumer.getAck().setAsyncAcks(true);
+
+        AckPolicy policy = props.resolveAckPolicy(consumer);
+
+        // ack-mode stays where the binder reads it from; ownership is the starter's own concept.
+        assertThat(policy.ackMode()).isEqualTo(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        assertThat(policy.owner()).isEqualTo(AckPolicy.Owner.STARTER);
+        assertThat(policy.asyncAcks()).isTrue();
+        assertThat(policy.isManual()).isTrue();
+        assertThat(policy.starterAcknowledges()).isTrue();
+    }
+
+    @Test
+    void ackPolicyDefaultsToTheContainerCommittingAfterTheListener() {
+        KafkaClusterProperties props = new KafkaClusterProperties();
+        ConsumerConfig consumer = new ConsumerConfig();
+        consumer.setName("orders");
+
+        AckPolicy policy = props.resolveAckPolicy(consumer);
+
+        assertThat(policy.ackMode()).isNull();
+        assertThat(policy.owner()).isEqualTo(AckPolicy.Owner.HANDLER);
+        assertThat(policy.isManual()).isFalse();
+        assertThat(policy.commitFollowsListener()).isTrue();
+    }
+
+    @Test
+    void starterOwnershipWithoutAManualAckModeDoesNotMakeTheStarterAcknowledge() {
+        KafkaClusterProperties props = new KafkaClusterProperties();
+        ConsumerConfig consumer = new ConsumerConfig();
+        consumer.setName("orders");
+        consumer.getAck().setOwner(AckPolicy.Owner.STARTER);
+
+        // There is nothing to acknowledge: the container commits on its own.
+        assertThat(props.resolveAckPolicy(consumer).starterAcknowledges()).isFalse();
     }
 
     @SuppressWarnings("unchecked")

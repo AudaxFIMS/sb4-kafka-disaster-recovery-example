@@ -1,7 +1,9 @@
 package dev.semeshin.kafkadr.config;
 
+import dev.semeshin.kafkadr.config.KafkaClusterProperties.AckConfig;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.BatchConfig;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.ConsumerConfig;
+import dev.semeshin.kafkadr.consumer.AckPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.listener.ContainerProperties.AckMode;
@@ -41,12 +43,18 @@ final class ConsumerConfigValidator {
             // whether the consumer batches or not.
             checkDlqSerializer(props, consumer);
 
+            AckMode ackMode = props.resolveAckMode(consumer);
+            // Acknowledgment is not a batch-only concern: the record path can be manual too,
+            // and until it was validated a forgotten acknowledge() showed up as a consumer
+            // group that quietly stopped committing.
+            checkAckOwnership(consumer, ackMode);
+            checkContainerAckSettings(props, consumer, ackMode);
+
             BatchConfig batch = consumer.getBatch();
             if (!batch.isEnabled()) {
                 continue;
             }
 
-            AckMode ackMode = props.resolveAckMode(consumer);
             checkStandardMode(props, consumer, batch);
             checkAckMode(consumer, batch, ackMode);
             checkPartialCommitReachable(consumer, batch, ackMode);
@@ -56,6 +64,101 @@ final class ConsumerConfigValidator {
             log.info("[{}] Batch enabled: mode={}, error-policy={}, ack-mode={}, max-records={}",
                     name, batch.getMode(), batch.getErrorPolicy(),
                     ackMode == null ? "BATCH (container default)" : ackMode, batch.getMaxRecords());
+        }
+    }
+
+    /**
+     * Who commits under a manual ack-mode, and whether that is even expressible.
+     *
+     * <p>On the batch paths ownership is fixed: {@code split} is acknowledged by the starter,
+     * {@code standard} by the handler that receives the envelope. Only the record path has a
+     * choice, so {@code ack.owner} is rejected anywhere else rather than silently ignored.
+     */
+    private static void checkAckOwnership(ConsumerConfig consumer, AckMode ackMode) {
+        String name = consumer.getName();
+        boolean batch = consumer.getBatch().isEnabled();
+        boolean manual = ackMode == AckMode.MANUAL || ackMode == AckMode.MANUAL_IMMEDIATE;
+        AckPolicy.Owner owner = consumer.getAck() == null || consumer.getAck().getOwner() == null
+                ? AckPolicy.Owner.HANDLER
+                : consumer.getAck().getOwner();
+
+        if (owner == AckPolicy.Owner.STARTER) {
+            if (batch) {
+                throw new IllegalStateException(
+                        ("Consumer '%s' sets ack.owner=starter with batching enabled. Ownership is not a choice "
+                                + "there: in batch.mode=split the starter already computes the commit point, and "
+                                + "in batch.mode=standard the handler owns the envelope and its acknowledgment. "
+                                + "Remove kafka-dr.consumers.%s.ack.owner.").formatted(name, name));
+            }
+            if (!manual) {
+                log.warn("[{}] ack.owner=starter has no effect with ack-mode={}: the container commits once the "
+                                + "listener returns. Set properties.ack-mode=MANUAL to move the commit into the "
+                                + "starter.", name, ackMode == null ? "BATCH (container default)" : ackMode);
+            } else {
+                log.info("[{}] ack.owner=starter: the starter acknowledges after the handler returns, then "
+                        + "advances the timestamp watermark", name);
+            }
+        } else if (manual && !batch) {
+            log.warn("[{}] ack-mode={} in record mode: the handler owns the commit and must call "
+                            + "Acknowledgment.acknowledge() on the kafka_acknowledgment header, or offsets are "
+                            + "never committed. Set kafka-dr.consumers.{}.ack.owner=starter to have the starter "
+                            + "acknowledge instead.", name, ackMode, name);
+        }
+
+        if (!batch && (ackMode == AckMode.TIME || ackMode == AckMode.COUNT || ackMode == AckMode.COUNT_TIME)) {
+            log.warn("[{}] ack-mode={} commits on its own schedule, which the starter cannot observe. The "
+                            + "timestamp watermark is left alone, so seek-by-timestamp falls back to committed "
+                            + "offsets after a failover.", name, ackMode);
+        }
+    }
+
+    /**
+     * The {@code ContainerProperties} settings the customizer applies. They are checked here
+     * because the container is built inside a binder child context, sometimes only at
+     * failover: spring-kafka's own assertion would fire there, hours after the deploy.
+     */
+    private static void checkContainerAckSettings(KafkaClusterProperties props, ConsumerConfig consumer,
+                                                  AckMode ackMode) {
+        AckConfig ack = consumer.getAck();
+        if (ack == null) {
+            return;
+        }
+        String name = consumer.getName();
+
+        if (ack.getCount() != null && ack.getCount() <= 0) {
+            throw new IllegalStateException(
+                    "Consumer '%s' has ack.count=%d; spring-kafka requires ackCount > 0"
+                            .formatted(name, ack.getCount()));
+        }
+        if (ack.getTime() != null && ack.getTime() <= 0) {
+            throw new IllegalStateException(
+                    "Consumer '%s' has ack.time=%d; spring-kafka requires ackTime > 0"
+                            .formatted(name, ack.getTime()));
+        }
+        if (ack.getCount() != null && ackMode != AckMode.COUNT && ackMode != AckMode.COUNT_TIME) {
+            log.warn("[{}] ack.count applies only to ack-mode COUNT and COUNT_TIME, current ack-mode is {} — "
+                    + "the setting is ignored", name, ackMode == null ? "BATCH (container default)" : ackMode);
+        }
+        if (ack.getTime() != null && ackMode != AckMode.TIME && ackMode != AckMode.COUNT_TIME) {
+            log.warn("[{}] ack.time applies only to ack-mode TIME and COUNT_TIME, current ack-mode is {} — "
+                    + "the setting is ignored", name, ackMode == null ? "BATCH (container default)" : ackMode);
+        }
+        if (Boolean.TRUE.equals(ack.getAsyncAcks())) {
+            if (ackMode != AckMode.MANUAL && ackMode != AckMode.MANUAL_IMMEDIATE) {
+                log.warn("[{}] ack.async-acks applies only to ack-mode MANUAL and MANUAL_IMMEDIATE, current "
+                                + "ack-mode is {} — the setting is ignored",
+                        name, ackMode == null ? "BATCH (container default)" : ackMode);
+            } else if (ack.getOwner() == AckPolicy.Owner.STARTER) {
+                log.warn("[{}] ack.async-acks with ack.owner=starter: the starter acknowledges on the consumer "
+                        + "thread before the listener returns, so acknowledgments are never out of order", name);
+            } else if (props.getFailover().isSeekByTimestamp()) {
+                // Every other setting that silences the watermark says so at startup; this
+                // one used to be the exception, and it silently removes a configured feature.
+                log.warn("[{}] ack.async-acks with failover.seek-by-timestamp: the acknowledgment arrives after "
+                                + "the handler returns, so the starter never observes the commit and the timestamp "
+                                + "watermark is not advanced. Seek-by-timestamp falls back to committed offsets "
+                                + "after a failover.", name);
+            }
         }
     }
 
