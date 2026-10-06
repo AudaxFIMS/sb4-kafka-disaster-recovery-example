@@ -1,0 +1,122 @@
+server:
+  port: 8084
+
+kafka-dr:
+  auto-create-topics: true
+  enabled: true
+
+  default-environment:
+    spring.cloud.stream.kafka.binder:
+      replication-factor: 1
+      configuration:
+        reconnect.backoff.ms: 1000
+        reconnect.backoff.max.ms: 10000
+        request.timeout.ms: 5000
+        default.api.timeout.ms: 10000
+        socket.connection.setup.timeout.ms: 3000
+
+  default-producer-properties:
+    sync: true
+    configuration:
+      acks: all
+      max.block.ms: 5000
+      delivery.timeout.ms: 10000
+      request.timeout.ms: 5000
+      key.serializer: org.apache.kafka.common.serialization.StringSerializer
+
+  clusters:
+    primary:
+      bootstrap-servers: ${KAFKA_PRIMARY_BROKERS:localhost:9092}
+      priority: 1
+    secondary:
+      bootstrap-servers: ${KAFKA_SECONDARY_BROKERS:localhost:9094}
+      priority: 2
+
+  consumers:
+    # Record path: the handler forwards into a DirectChannel and orderFlow does the work.
+    flow-orders-consumer:
+      topic: flow-orders
+      group: flow-orders
+      handler: processOrder
+      content-type: json
+      properties:
+        # A handler failure now propagates, so the retry chain is worth choosing explicitly.
+        # One in-binding attempt, then the container's error handler. For a topic that can
+        # carry poison payloads add enable-dlq: true — omitted here because the DLQ topic is
+        # created by the binder, and this example provisions topics itself.
+        max-attempts: 1
+
+    # Batch path: one gateway call per record, one sendBatch for the whole batch.
+    flow-billing-consumer:
+      topic: flow-billing
+      group: flow-billing
+      handler: billOrders
+      content-type: json
+      batch:
+        enabled: true
+        mode: split
+        max-records: 50
+        max-wait-ms: 500
+        error-policy: fail-batch
+      properties:
+        # Partial acknowledgment of the successful prefix requires MANUAL_IMMEDIATE.
+        ack-mode: MANUAL_IMMEDIATE
+        configuration:
+          max.poll.interval.ms: 300000
+
+    # Plain record consumer, no flow — this is what the two flows above publish into.
+    flow-invoices-consumer:
+      topic: flow-invoices
+      group: flow-invoices
+      handler: processInvoice
+      content-type: json
+
+  producers:
+    flow-orders-producer:
+      topic: flow-orders
+      content-type: json
+
+    flow-billing-producer:
+      topic: flow-billing
+      content-type: json
+
+    flow-invoices-producer:
+      topic: flow-invoices
+      content-type: json
+
+  failover:
+    seek-by-timestamp: true
+
+  health-check:
+    interval-ms: 5000
+    timeout-ms: 2000
+    failure-threshold: 2
+    recovery-threshold: 3
+
+  idempotency:
+    ttl-seconds: 3600
+    key-prefix: integration-flow
+
+  debug:
+    enable: false
+
+logging:
+  level:
+    dev.semeshin.kafkadr: INFO
+    org.apache.kafka.clients.admin.AdminClientConfig: WARN
+    org.apache.kafka.clients.consumer.ConsumerConfig: WARN
+    org.apache.kafka.clients.producer.ProducerConfig: WARN
+    org.apache.kafka.common.utils.AppInfoParser: WARN
+    org.apache.kafka.common.config.AbstractConfig: WARN
+    org.apache.kafka.common.metrics.Metrics: WARN
+    org.apache.kafka.clients.admin.internals.AdminMetadataManager: ERROR
+    org.apache.kafka.clients.Metadata: ERROR
+    org.apache.kafka.clients.NetworkClient: ERROR
+    org.apache.kafka.clients.FetchSessionHandler: ERROR
+    org.springframework.kafka.support.LoggingProducerListener: OFF
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

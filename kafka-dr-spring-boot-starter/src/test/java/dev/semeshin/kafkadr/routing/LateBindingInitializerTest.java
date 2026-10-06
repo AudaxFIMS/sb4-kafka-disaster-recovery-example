@@ -12,11 +12,15 @@ import org.mockito.MockedStatic;
 import org.springframework.cloud.stream.binder.Binder;
 import org.springframework.cloud.stream.binder.BinderFactory;
 import org.springframework.cloud.stream.binder.Binding;
+import org.springframework.cloud.stream.binder.ConsumerProperties;
 import org.springframework.cloud.stream.binder.ExtendedConsumerProperties;
+import org.springframework.cloud.stream.binder.ExtendedPropertiesBinder;
 import org.springframework.cloud.stream.binder.kafka.properties.KafkaConsumerProperties;
+import org.springframework.cloud.stream.binder.kafka.properties.KafkaProducerProperties;
 import org.springframework.cloud.stream.config.BindingProperties;
 import org.springframework.cloud.stream.config.BindingServiceProperties;
 import org.springframework.context.ApplicationContext;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.mockito.ArgumentCaptor;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
@@ -27,6 +31,7 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -39,13 +44,18 @@ import static org.mockito.Mockito.when;
 
 class LateBindingInitializerTest {
 
+    /** Binding name for consumer "orders" on cluster "primary". */
+    private static final String BINDING = "ordersPrimary-in-0";
+
     private KafkaClusterProperties properties;
     private StartupClusterState startupState;
     private ActiveClusterManager clusterManager;
     private BinderFactory binderFactory;
     private BindingServiceProperties bindingServiceProperties;
     private ApplicationContext applicationContext;
-    private Binder<MessageChannel, ExtendedConsumerProperties<KafkaConsumerProperties>, ?> binder;
+    private ConsumerProperties coreProperties;
+    private KafkaConsumerProperties kafkaProperties;
+    private ExtendedPropertiesBinder<MessageChannel, KafkaConsumerProperties, KafkaProducerProperties> binder;
     private Binding<?> binding;
     private MockedStatic<KafkaAdminHelper> staticHelper;
 
@@ -58,8 +68,15 @@ class LateBindingInitializerTest {
         binderFactory = mock(BinderFactory.class);
         bindingServiceProperties = mock(BindingServiceProperties.class);
         applicationContext = mock(ApplicationContext.class);
-        binder = mock(Binder.class);
+        binder = mock(ExtendedPropertiesBinder.class);
         binding = mock(Binding.class);
+
+        // Late-bound consumers reuse the properties Spring Cloud Stream already
+        // resolved for the binding, so the tests supply both namespaces.
+        coreProperties = new ConsumerProperties();
+        kafkaProperties = new KafkaConsumerProperties();
+        when(bindingServiceProperties.getConsumerProperties(anyString())).thenReturn(coreProperties);
+        when(binder.getExtendedConsumerProperties(anyString())).thenReturn(kafkaProperties);
 
         when(binderFactory.getBinder(anyString(), eq(MessageChannel.class))).thenReturn((Binder) binder);
 
@@ -178,9 +195,10 @@ class LateBindingInitializerTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void handlerExceptionsAreSwallowedByChannelSubscriber() {
+    void handlerExceptionsPropagateToTheContainer() {
+        RuntimeException failure = new RuntimeException("downstream failure");
         Consumer<Message<?>> failingHandler = msg -> {
-            throw new RuntimeException("downstream failure");
+            throw failure;
         };
         when(applicationContext.getBean(anyString(), eq(Consumer.class)))
                 .thenReturn(failingHandler);
@@ -196,31 +214,68 @@ class LateBindingInitializerTest {
         verify(binder).bindConsumer(anyString(), anyString(),
                 channelCaptor.capture(), any(ExtendedConsumerProperties.class));
 
+        // Swallowing here would hide failures from the container's error handler and
+        // make a late-bound cluster behave differently from a startup-bound one.
         MessageChannel channel = channelCaptor.getValue();
-        boolean sent = channel.send(MessageBuilder.withPayload("payload").build());
-        assertThat(sent).isTrue();
+        Message<String> message = MessageBuilder.withPayload("payload").build();
+        assertThatThrownBy(() -> channel.send(message)).hasRootCause(failure);
     }
 
     @Test
     void nativeContentTypeEnablesNativeDecoding() {
-        properties.getConsumers().get("orders").setContentType("native");
-        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("primary"), any())).thenReturn(true);
-        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("secondary"), any())).thenReturn(false);
+        coreProperties.setUseNativeDecoding(true);
 
-        newInitializer().checkAndInitializeClusters();
-
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<ExtendedConsumerProperties<KafkaConsumerProperties>> captor =
-                ArgumentCaptor.forClass(ExtendedConsumerProperties.class);
-        verify(binder).bindConsumer(anyString(), anyString(), any(MessageChannel.class), captor.capture());
-        assertThat(captor.getValue().isUseNativeDecoding()).isTrue();
+        assertThat(bindConsumerProperties().isUseNativeDecoding()).isTrue();
     }
 
     @Test
     void appliesConsumerConfigurationProperties() {
-        properties.getConsumers().get("orders").setProperties(Map.of(
-                "configuration", Map.of("value.deserializer", "io.confluent.kafka.serializers.KafkaAvroDeserializer")
-        ));
+        kafkaProperties.getConfiguration().put(
+                "value.deserializer", "io.confluent.kafka.serializers.KafkaAvroDeserializer");
+
+        assertThat(bindConsumerProperties().getExtension().getConfiguration())
+                .containsEntry("value.deserializer", "io.confluent.kafka.serializers.KafkaAvroDeserializer");
+    }
+
+    @Test
+    void appliesKafkaExtensionPropertiesBeyondConfiguration() {
+        // ack-mode, enable-dlq and friends used to be dropped: only keys prefixed
+        // with "configuration." were copied, so a late-initialized cluster silently
+        // ran with different commit and DLQ semantics than a startup-initialized one.
+        kafkaProperties.setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        kafkaProperties.setEnableDlq(true);
+        kafkaProperties.setDlqName("orders-dlq");
+
+        KafkaConsumerProperties ext = bindConsumerProperties().getExtension();
+
+        assertThat(ext.getAckMode()).isEqualTo(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        assertThat(ext.isEnableDlq()).isTrue();
+        assertThat(ext.getDlqName()).isEqualTo("orders-dlq");
+    }
+
+    @Test
+    void appliesCoreBindingPropertiesBeyondNativeDecoding() {
+        coreProperties.setConcurrency(3);
+        coreProperties.setMaxAttempts(1);
+        coreProperties.setBatchMode(true);
+
+        ExtendedConsumerProperties<KafkaConsumerProperties> props = bindConsumerProperties();
+
+        assertThat(props.getConcurrency()).isEqualTo(3);
+        assertThat(props.getMaxAttempts()).isEqualTo(1);
+        assertThat(props.isBatchMode()).isTrue();
+    }
+
+    @Test
+    void autoStartupStaysWithTheStarterEvenIfConfiguredOtherwise() {
+        coreProperties.setAutoStartup(true);
+
+        // Binding lifecycle is driven by cluster switches, never by configuration.
+        assertThat(bindConsumerProperties().isAutoStartup()).isFalse();
+    }
+
+    /** Runs late initialization for "primary" and returns the properties handed to the binder. */
+    private ExtendedConsumerProperties<KafkaConsumerProperties> bindConsumerProperties() {
         staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("primary"), any())).thenReturn(true);
         staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("secondary"), any())).thenReturn(false);
 
@@ -230,8 +285,7 @@ class LateBindingInitializerTest {
         ArgumentCaptor<ExtendedConsumerProperties<KafkaConsumerProperties>> captor =
                 ArgumentCaptor.forClass(ExtendedConsumerProperties.class);
         verify(binder).bindConsumer(anyString(), anyString(), any(MessageChannel.class), captor.capture());
-        assertThat(captor.getValue().getExtension().getConfiguration())
-                .containsEntry("value.deserializer", "io.confluent.kafka.serializers.KafkaAvroDeserializer");
+        return captor.getValue();
     }
 
     @Test

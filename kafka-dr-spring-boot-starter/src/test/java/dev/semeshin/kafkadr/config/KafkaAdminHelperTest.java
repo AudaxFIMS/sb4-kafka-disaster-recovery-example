@@ -45,6 +45,25 @@ class KafkaAdminHelperTest {
     @AfterEach
     void tearDown() {
         adminClientStatic.close();
+        KafkaAdminHelper.setDebugEnabled(false);
+    }
+
+    @Test
+    void debugIsOffByDefault() {
+        assertThat(KafkaAdminHelper.isDebugEnabled()).isFalse();
+    }
+
+    @Test
+    void probeClusterStillReturnsFalseWithDebugEnabled() {
+        KafkaAdminHelper.setDebugEnabled(true);
+        DescribeClusterResult cluster = mock(DescribeClusterResult.class);
+        when(adminClient.describeCluster()).thenReturn(cluster);
+        KafkaFutureImpl<String> failed = new KafkaFutureImpl<>();
+        failed.completeExceptionally(new TimeoutException("broker down"));
+        when(cluster.clusterId()).thenReturn(failed);
+
+        assertThat(KafkaAdminHelper.probeCluster("kafka:9092", 1000, Map.of())).isFalse();
+        assertThat(KafkaAdminHelper.isDebugEnabled()).isTrue();
     }
 
     @Test

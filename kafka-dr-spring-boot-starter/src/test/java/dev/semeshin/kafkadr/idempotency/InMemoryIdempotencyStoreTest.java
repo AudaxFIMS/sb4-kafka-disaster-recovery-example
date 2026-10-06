@@ -7,9 +7,11 @@ import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 class InMemoryIdempotencyStoreTest {
 
@@ -131,6 +133,38 @@ class InMemoryIdempotencyStoreTest {
         assertThat(store.tryProcess("primary", "c1", messageWithKey("old-1"))).isTrue();
         assertThat(store.tryProcess("primary", "c1", messageWithKey("old-2"))).isTrue();
         assertThat(store.tryProcess("primary", "c1", messageWithKey("fresh"))).isFalse();
+    }
+
+    @Test
+    void rollbackLetsTheMessageBeProcessedAgain() {
+        Message<?> message = messageWithKey("o-1");
+        assertThat(store.tryProcess("primary", "c1", message)).isTrue();
+        assertThat(store.tryProcess("primary", "c1", message)).isFalse();
+
+        store.rollback("primary", "c1", List.of(message));
+
+        // A redelivery after a failed handler must not be dropped as a duplicate.
+        assertThat(store.tryProcess("primary", "c1", message)).isTrue();
+    }
+
+    @Test
+    void rollbackIsScopedToTheConsumerThatMarkedTheMessage() {
+        Message<?> message = messageWithKey("o-1");
+        store.tryProcess("primary", "c1", message);
+        store.tryProcess("primary", "c2", message);
+
+        store.rollback("primary", "c1", List.of(message));
+
+        assertThat(store.tryProcess("primary", "c1", message)).isTrue();
+        assertThat(store.tryProcess("primary", "c2", message)).isFalse();
+    }
+
+    @Test
+    void rollbackIgnoresMessagesWithoutAKeyAndUnknownEntries() {
+        Message<?> keyless = MessageBuilder.withPayload("payload").build();
+
+        assertThatCode(() -> store.rollback("primary", "c1",
+                List.of(keyless, messageWithKey("never-seen")))).doesNotThrowAnyException();
     }
 
     @SuppressWarnings("unchecked")

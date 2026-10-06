@@ -23,7 +23,7 @@ class TimestampSeekRebalanceListenerTest {
     @SuppressWarnings("unchecked")
     void seeksToOffsetMatchingLastTimestamp() {
         LastProcessedTimestampTracker tracker = new LastProcessedTimestampTracker(null);
-        tracker.update("orders", 1714003200000L);
+        tracker.update("orders", 0, 1714003200000L);
 
         Consumer<Object, Object> consumer = mock(Consumer.class);
         TopicPartition tp = new TopicPartition("orders", 0);
@@ -41,7 +41,7 @@ class TimestampSeekRebalanceListenerTest {
     @SuppressWarnings("unchecked")
     void skipsSeekWhenNoOffsetFoundForTimestamp() {
         LastProcessedTimestampTracker tracker = new LastProcessedTimestampTracker(null);
-        tracker.update("orders", 1714003200000L);
+        tracker.update("orders", 0, 1714003200000L);
 
         Consumer<Object, Object> consumer = mock(Consumer.class);
         TopicPartition tp = new TopicPartition("orders", 0);
@@ -86,7 +86,8 @@ class TimestampSeekRebalanceListenerTest {
     @SuppressWarnings("unchecked")
     void seeksMultiplePartitionsIndependently() {
         LastProcessedTimestampTracker tracker = new LastProcessedTimestampTracker(null);
-        tracker.update("orders", 1000L);
+        tracker.update("orders", 0, 1000L);
+        tracker.update("orders", 1, 1000L);
 
         Consumer<Object, Object> consumer = mock(Consumer.class);
         TopicPartition tp0 = new TopicPartition("orders", 0);

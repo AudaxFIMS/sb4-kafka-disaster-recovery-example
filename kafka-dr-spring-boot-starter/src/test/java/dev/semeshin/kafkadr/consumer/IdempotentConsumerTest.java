@@ -8,10 +8,12 @@ import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -97,33 +99,27 @@ class IdempotentConsumerTest {
 
         IdempotentConsumer c = new IdempotentConsumer(
                 "orders", "primary", store, delegate, tracker);
-        c.accept(MessageBuilder.withPayload("payload")
-                .setHeader(KafkaHeaders.RECEIVED_KEY, "o-1")
-                .setHeader(KafkaHeaders.RECEIVED_TIMESTAMP, 1714003200000L)
-                .build());
+        c.accept(kafkaMessage("o-1", 1714003200000L));
 
-        assertThat(tracker.getLastTimestamp("orders")).isEqualTo(1714003200000L);
+        assertThat(tracker.getLastTimestamp("order-events", 2)).isEqualTo(1714003200000L);
     }
 
     @Test
-    void disabledStoreProcessesEveryMessageAndStillTracksTimestamp() {
+    void watermarkIsKeyedByTopicAndPartitionNotConsumerName() {
+        when(store.tryProcess(anyString(), anyString(), any())).thenReturn(true);
+
         IdempotentConsumer c = new IdempotentConsumer(
-                "orders", "primary", IdempotencyStore.DISABLED, delegate, tracker);
-        Message<?> msg = MessageBuilder.withPayload("payload")
-                .setHeader(KafkaHeaders.RECEIVED_KEY, "o-1")
-                .setHeader(KafkaHeaders.RECEIVED_TIMESTAMP, 1714003200000L)
-                .build();
+                "orders", "primary", store, delegate, tracker);
+        c.accept(kafkaMessage("o-1", 1714003200000L));
 
-        c.accept(msg);
-        c.accept(msg);
-
-        assertThat(delegateCount.get()).isEqualTo(2);
-        assertThat(tracker.getLastTimestamp("orders")).isEqualTo(1714003200000L);
+        // The rebalance listener looks up by the assigned TopicPartition; keying by
+        // consumer name made the lookup miss whenever the map key differed from the topic.
+        assertThat(tracker.getAllTimestamps()).containsOnlyKeys("order-events-2");
     }
 
     @Test
-    void timestampNotTrackedOnDuplicate() {
-        when(store.tryProcess(anyString(), anyString(), any())).thenReturn(false);
+    void watermarkNotAdvancedWithoutTopicAndPartitionHeaders() {
+        when(store.tryProcess(anyString(), anyString(), any())).thenReturn(true);
 
         IdempotentConsumer c = new IdempotentConsumer(
                 "orders", "primary", store, delegate, tracker);
@@ -132,6 +128,57 @@ class IdempotentConsumerTest {
                 .setHeader(KafkaHeaders.RECEIVED_TIMESTAMP, 1714003200000L)
                 .build());
 
-        assertThat(tracker.getLastTimestamp("orders")).isNull();
+        assertThat(delegateCount.get()).isEqualTo(1);
+        assertThat(tracker.getAllTimestamps()).isEmpty();
+    }
+
+    @Test
+    void disabledStoreProcessesEveryMessageAndStillTracksTimestamp() {
+        IdempotentConsumer c = new IdempotentConsumer(
+                "orders", "primary", IdempotencyStore.DISABLED, delegate, tracker);
+        Message<?> msg = kafkaMessage("o-1", 1714003200000L);
+
+        c.accept(msg);
+        c.accept(msg);
+
+        assertThat(delegateCount.get()).isEqualTo(2);
+        assertThat(tracker.getLastTimestamp("order-events", 2)).isEqualTo(1714003200000L);
+    }
+
+    @Test
+    void timestampNotTrackedOnDuplicate() {
+        when(store.tryProcess(anyString(), anyString(), any())).thenReturn(false);
+
+        IdempotentConsumer c = new IdempotentConsumer(
+                "orders", "primary", store, delegate, tracker);
+        c.accept(kafkaMessage("o-1", 1714003200000L));
+
+        assertThat(tracker.getLastTimestamp("order-events", 2)).isNull();
+    }
+
+    @Test
+    void handlerFailureRollsBackTheMarkAndRethrows() {
+        when(store.tryProcess(anyString(), anyString(), any())).thenReturn(true);
+        RuntimeException boom = new IllegalStateException("handler blew up");
+        Consumer<Message<?>> failing = msg -> { throw boom; };
+
+        IdempotentConsumer c = new IdempotentConsumer(
+                "orders", "primary", store, failing, tracker);
+        Message<?> msg = kafkaMessage("o-1", 1714003200000L);
+
+        assertThatThrownBy(() -> c.accept(msg)).isSameAs(boom);
+
+        // Without the rollback the redelivery Kafka performs would be dropped as a duplicate.
+        verify(store).rollback(eq("primary"), eq("orders"), eq(List.of(msg)));
+        assertThat(tracker.getAllTimestamps()).isEmpty();
+    }
+
+    private static Message<?> kafkaMessage(String key, long timestamp) {
+        return MessageBuilder.withPayload("payload")
+                .setHeader(KafkaHeaders.RECEIVED_KEY, key)
+                .setHeader(KafkaHeaders.RECEIVED_TOPIC, "order-events")
+                .setHeader(KafkaHeaders.RECEIVED_PARTITION, 2)
+                .setHeader(KafkaHeaders.RECEIVED_TIMESTAMP, timestamp)
+                .build();
     }
 }

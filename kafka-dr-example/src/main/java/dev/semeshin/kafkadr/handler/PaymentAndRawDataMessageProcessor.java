@@ -2,10 +2,10 @@ package dev.semeshin.kafkadr.handler;
 
 import dev.semeshin.kafkadr.avro.PaymentEvent;
 import dev.semeshin.kafkadr.consumer.MessageProcessor;
+import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.messaging.Message;
-import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.stereotype.Component;
 
 /**
@@ -19,11 +19,11 @@ public class PaymentAndRawDataMessageProcessor implements MessageProcessor {
 
     public void processPayment(Message<PaymentEvent> message) {
         PaymentEvent payment = message.getPayload();
-        log.info("[payment-events] key={}, paymentId={}", message.getHeaders().get(KafkaHeaders.RECEIVED_KEY), payment.getPaymentId());
+        log.info("[payment-events] key={}, paymentId={}", IdempotencyStore.kafkaKey(message, null), payment.getPaymentId());
     }
 
     public void processRawData(Message<byte[]> message) {
         byte[] data = message.getPayload();
-        log.info("[raw-telemetry] key={}, size={} bytes", message.getHeaders().get(KafkaHeaders.RECEIVED_KEY), data.length);
+        log.info("[raw-telemetry] key={}, size={} bytes", IdempotencyStore.kafkaKey(message, null), data.length);
     }
 }

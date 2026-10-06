@@ -91,7 +91,11 @@ public class ClusterHealthChecker implements HealthIndicator {
                 healthy = entry.getValue().get(awaitMs, TimeUnit.MILLISECONDS);
             } catch (Exception e) {
                 entry.getValue().cancel(true);
-                log.debug("[{}] Health probe did not complete within {}ms: {}", name, awaitMs, e.getMessage());
+                if (debugEnabled()) {
+                    log.warn("[{}] Health probe did not complete within {}ms", name, awaitMs, e);
+                } else {
+                    log.debug("[{}] Health probe did not complete within {}ms: {}", name, awaitMs, e.getMessage());
+                }
                 healthy = false;
             }
             clusterManager.reportHealth(name, healthy);
@@ -110,7 +114,11 @@ public class ClusterHealthChecker implements HealthIndicator {
                     .get(timeoutMs, TimeUnit.MILLISECONDS);
             return true;
         } catch (Exception e) {
-            log.debug("[{}] Admin probe failed: {}", brokers, e.getMessage());
+            if (debugEnabled()) {
+                log.warn("[{}] Admin probe failed", brokers, e);
+            } else {
+                log.debug("[{}] Admin probe failed: {}", brokers, e.getMessage());
+            }
             return false;
         }
     }
@@ -179,9 +187,18 @@ public class ClusterHealthChecker implements HealthIndicator {
 
             return true;
         } catch (Exception e) {
-            log.debug("[{}] Deep probe failed: {}", clusterName, e.getMessage());
+            if (debugEnabled()) {
+                log.warn("[{}] Deep probe failed", clusterName, e);
+            } else {
+                log.debug("[{}] Deep probe failed: {}", clusterName, e.getMessage());
+            }
             return false;
         }
+    }
+
+    /** Diagnostic logging switch — see {@code kafka-dr.debug.enable}. */
+    private boolean debugEnabled() {
+        return properties.getDebug().isEnable();
     }
 
     private Set<String> getConfiguredTopics() {

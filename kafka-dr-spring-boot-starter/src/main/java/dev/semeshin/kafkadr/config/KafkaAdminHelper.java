@@ -19,7 +19,22 @@ public final class KafkaAdminHelper {
     private static final Logger log = LoggerFactory.getLogger(KafkaAdminHelper.class);
     private static final int DEFAULT_TIMEOUT_MS = 3000;
 
+    /**
+     * Mirror of {@code kafka-dr.debug.enable}. Pushed in by {@link DynamicBindingRegistrar}
+     * once the properties are bound: this class is a static utility, not a bean, so it has
+     * nowhere for Spring to inject into.
+     */
+    private static volatile boolean debugEnabled = false;
+
     private KafkaAdminHelper() {}
+
+    public static void setDebugEnabled(boolean enabled) {
+        debugEnabled = enabled;
+    }
+
+    public static boolean isDebugEnabled() {
+        return debugEnabled;
+    }
 
     private static final String KAFKA_BINDER_CONFIG_PREFIX = "spring.cloud.stream.kafka.binder.configuration.";
 
@@ -28,6 +43,9 @@ public final class KafkaAdminHelper {
             admin.describeCluster().clusterId().get(timeoutMs, TimeUnit.MILLISECONDS);
             return true;
         } catch (Exception e) {
+            if (isDebugEnabled()) {
+                log.warn("Probe failed for brokers={}, timeoutMs={}", brokers, timeoutMs, e);
+            }
             return false;
         }
     }
@@ -79,7 +97,11 @@ public final class KafkaAdminHelper {
                         toCreate.stream().map(NewTopic::name).toList());
             }
         } catch (Exception e) {
-            log.warn("[{}] Topic provisioning failed: {}", cluster, e.getMessage());
+            if (debugEnabled) {
+                log.warn("[{}] Topic provisioning failed", cluster, e);
+            } else {
+                log.warn("[{}] Topic provisioning failed: {}", cluster, e.getMessage());
+            }
         }
     }
 
@@ -121,6 +143,9 @@ public final class KafkaAdminHelper {
         // and the subsequent close() block far longer than timeoutMs.
         config.put(AdminClientConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG, (long) timeoutMs);
         config.put(AdminClientConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG, (long) timeoutMs);
+		// Override properties from manual settings
+	    config.putAll(extraProps);
+
         return AdminClient.create(config);
     }
 }

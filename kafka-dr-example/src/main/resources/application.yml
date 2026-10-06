@@ -8,7 +8,6 @@ kafka-dr:
   enabled: true
   default-environment:
     spring.cloud.stream.kafka.binder:
-      auto-create-topics: false
       replication-factor: 1
       configuration:
         reconnect.backoff.ms: 1000
@@ -74,6 +73,23 @@ kafka-dr:
       handler: processRawData
       content-type: bytes
 
+    # Manual commit without a line of acknowledgment code in the handler.
+    # ack-mode: MANUAL takes the commit away from the container, and ack.owner: starter
+    # hands it to IdempotentConsumer, which acknowledges once the handler has returned
+    # normally and only then advances the seek-by-timestamp watermark. A handler that
+    # throws is never acknowledged, so Kafka redelivers.
+    ledger-events-consumer:
+      topic: ledger-events
+      group: dr-demo-group
+      handler: processLedgerEntry
+      content-type: string
+      ack:
+        owner: starter
+      properties:
+        # MANUAL queues the acknowledgment and the container commits it on the next poll.
+        # MANUAL_IMMEDIATE would commit synchronously on every record instead.
+        ack-mode: MANUAL
+
   producers:
     demo-events-producer:
       topic: demo-events
@@ -94,6 +110,10 @@ kafka-dr:
       topic: raw-telemetry
       content-type: bytes
 
+    ledger-events-producer:
+      topic: ledger-events
+      content-type: string
+
   health-check:
     interval-ms: 5000
     timeout-ms: 3000
@@ -107,9 +127,16 @@ kafka-dr:
 
 logging:
   level:
-    org.apache.kafka.clients.NetworkClient: ERROR
+    dev.semeshin.kafkadr: INFO
+    org.apache.kafka.clients.admin.AdminClientConfig: WARN
+    org.apache.kafka.clients.consumer.ConsumerConfig: WARN
+    org.apache.kafka.clients.producer.ProducerConfig: WARN
+    org.apache.kafka.common.utils.AppInfoParser: WARN
+    org.apache.kafka.common.config.AbstractConfig: WARN
+    org.apache.kafka.common.metrics.Metrics: WARN
     org.apache.kafka.clients.admin.internals.AdminMetadataManager: ERROR
     org.apache.kafka.clients.Metadata: ERROR
+    org.apache.kafka.clients.NetworkClient: ERROR
     org.apache.kafka.clients.FetchSessionHandler: ERROR
     org.springframework.kafka.support.LoggingProducerListener: OFF
 

@@ -6,6 +6,7 @@ import org.springframework.messaging.Message;
 import org.springframework.scheduling.annotation.Scheduled;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -61,6 +62,18 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
 	    log.debug("[{}][{}] Message with idempotency key accepted: {}", clusterName, consumerName, compositeKey);
 
         return true;
+    }
+
+    @Override
+    public void rollback(String clusterName, String consumerName, List<Message<?>> messages) {
+        for (Message<?> message : messages) {
+            String key = extractKey(message);
+            if (key == null) continue;
+            String compositeKey = consumerName + ":" + key;
+            if (processedIds.remove(compositeKey) != null) {
+                log.debug("[{}][{}] Rolled back idempotency key: {}", clusterName, consumerName, compositeKey);
+            }
+        }
     }
 
     @Scheduled(fixedRate = 300_000)

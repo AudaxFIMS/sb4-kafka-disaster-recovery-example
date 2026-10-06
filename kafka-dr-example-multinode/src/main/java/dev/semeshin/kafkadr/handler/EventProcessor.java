@@ -1,6 +1,7 @@
 package dev.semeshin.kafkadr.handler;
 
 import dev.semeshin.kafkadr.consumer.MessageProcessor;
+import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.support.KafkaHeaders;
@@ -15,7 +16,7 @@ public class EventProcessor implements MessageProcessor {
     public void processEvent(Message<String> message) {
         log.info("[{}] key={}, payload={}",
                 message.getHeaders().get(KafkaHeaders.RECEIVED_TOPIC),
-                message.getHeaders().get(KafkaHeaders.RECEIVED_KEY),
+                IdempotencyStore.kafkaKey(message, null),
                 message.getPayload());
     }
 }
