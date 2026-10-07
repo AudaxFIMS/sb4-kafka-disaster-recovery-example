@@ -104,4 +104,22 @@ class TimestampSeekRebalanceListenerTest {
         verify(consumer).seek(tp1, 20L);
         verify(consumer, times(2)).seek(any(), anyLong());
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void seeksWithTheWatermarkOfItsOwnConsumer() {
+        LastProcessedTimestampTracker tracker = new LastProcessedTimestampTracker(null);
+        tracker.forConsumer("orders-main").update("events", 0, 5000L);
+        tracker.forConsumer("orders-audit").update("events", 0, 1000L);
+
+        Consumer<Object, Object> consumer = mock(Consumer.class);
+        TopicPartition tp = new TopicPartition("events", 0);
+        when(consumer.offsetsForTimes(any())).thenReturn(Map.of(tp, new OffsetAndTimestamp(42L, 1000L)));
+
+        new TimestampSeekRebalanceListener(tracker.forConsumer("orders-audit"))
+                .onPartitionsAssigned(consumer, List.of(tp));
+
+        verify(consumer).offsetsForTimes(Map.of(tp, 1000L));
+        verify(consumer).seek(tp, 42L);
+    }
 }

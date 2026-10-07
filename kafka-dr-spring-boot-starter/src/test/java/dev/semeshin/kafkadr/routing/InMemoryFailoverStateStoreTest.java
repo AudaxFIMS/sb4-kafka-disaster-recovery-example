@@ -40,4 +40,25 @@ class InMemoryFailoverStateStoreTest {
 
         assertThat(store.load()).isEmpty();
     }
+
+    @Test
+    void eachGroupHasItsOwnState() {
+        Instant when = Instant.parse("2025-01-15T14:00:00Z");
+        store.save("core", new FailoverState("core-secondary", when));
+        store.save("analytics", new FailoverState("analytics-dc2", when));
+
+        store.clear("core");
+
+        assertThat(store.load("core")).isEmpty();
+        assertThat(store.load("analytics")).contains(new FailoverState("analytics-dc2", when));
+    }
+
+    @Test
+    void singleStateMethodsAddressTheDefaultGroup() {
+        Instant when = Instant.parse("2025-01-15T14:00:00Z");
+        store.save(new FailoverState("secondary", when));
+
+        assertThat(store.load("default")).contains(new FailoverState("secondary", when));
+        assertThat(store.load("core")).isEmpty();
+    }
 }

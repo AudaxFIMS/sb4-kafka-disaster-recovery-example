@@ -8,8 +8,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.*;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Shared utilities for AdminClient operations: probing clusters and provisioning topics.
@@ -60,18 +58,45 @@ public final class KafkaAdminHelper {
 
     /**
      * Probes a cluster using Kafka client properties extracted from the cluster's effective environment.
+     *
+     * @param clusterId the cluster's binder id
      */
-    public static boolean probeCluster(String clusterName, KafkaClusterProperties props) {
-        String brokers = props.getClusters().get(clusterName).getBootstrapServers();
-        Map<String, String> kafkaProps = extractKafkaClientProperties(props.getEffectiveEnvironment(clusterName));
+    public static boolean probeCluster(String clusterId, KafkaClusterProperties props) {
+        String brokers = props.findCluster(clusterId).getBootstrapServers();
+        Map<String, String> kafkaProps = extractKafkaClientProperties(props.getEffectiveEnvironment(clusterId));
         return probeCluster(brokers, DEFAULT_TIMEOUT_MS, kafkaProps);
     }
 
+    /**
+     * Creates the topics of the cluster's own group that are missing on it. Topics of other
+     * groups belong to a different Kafka and are never created here.
+     *
+     * @param cluster the cluster's binder id
+     */
     public static void provisionTopics(String cluster, String brokers, KafkaClusterProperties props, int timeoutMs) {
-        Set<String> requiredTopics = Stream.concat(
-                props.getConsumers().values().stream().map(KafkaClusterProperties.ConsumerConfig::getTopic),
-                props.getProducers().values().stream().map(KafkaClusterProperties.ProducerConfig::getTopic)
-        ).collect(Collectors.toSet());
+        provisionTopics(cluster, brokers, props, props.topology(), timeoutMs);
+    }
+
+    /**
+     * Same, with the topology already resolved — what the starter itself uses, so a provisioning
+     * round does not rebuild the whole topology for every cluster it touches.
+     */
+    public static void provisionTopics(String cluster, String brokers, KafkaClusterProperties props,
+                                       ClusterTopology topology) {
+        provisionTopics(cluster, brokers, props, topology, DEFAULT_TIMEOUT_MS);
+    }
+
+    private static void provisionTopics(String cluster, String brokers, KafkaClusterProperties props,
+                                        ClusterTopology topology, int timeoutMs) {
+        ClusterTopology.Group group = topology.groupOfCluster(cluster);
+        if (group == null) {
+            // Silently creating nothing would leave the topics missing until a failover needs them.
+            log.warn("[{}] Not a configured cluster id — no topics provisioned. A cluster of a cluster group is "
+                    + "addressed by its binder id <group>-<cluster>; configured: {}", cluster,
+                    topology.clusters().stream().map(ClusterTopology.ClusterRef::id).toList());
+            return;
+        }
+        Set<String> requiredTopics = group.topics();
 
         if (requiredTopics.isEmpty()) return;
 

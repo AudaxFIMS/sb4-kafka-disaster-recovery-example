@@ -1,0 +1,106 @@
+# Two independent cluster groups for kafka-dr-example-multi-group.
+#
+#   core       mg-core-a (9192)      -> mg-core-b (9194)        replicated by mm2-core
+#   analytics  mg-analytics-a (9292) -> mg-analytics-b (9294)   replicated by mm2-analytics
+#
+# Each group has its own MirrorMaker 2 and replicates only inside itself: a group is one
+# logical Kafka, and its topics must never appear in another group's clusters. Ports and
+# container names do not overlap with docker-compose.yml, so both stacks can coexist.
+
+services:
+
+  mg-core-a:
+    image: apache/kafka:3.9.0
+    container_name: mg-core-a
+    ports:
+      - "9192:9192"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@mg-core-a:9193
+      KAFKA_LISTENERS: EXTERNAL://:9192,INTERNAL://:19192,CONTROLLER://:9193
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9192,INTERNAL://mg-core-a:19192
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: 4RzCQ4tsRiaY80qXPQ8ZCQ
+
+  mg-core-b:
+    image: apache/kafka:3.9.0
+    container_name: mg-core-b
+    ports:
+      - "9194:9194"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@mg-core-b:9195
+      KAFKA_LISTENERS: EXTERNAL://:9194,INTERNAL://:19194,CONTROLLER://:9195
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9194,INTERNAL://mg-core-b:19194
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: KpwvD3JOQheMDYWXxf4B2Q
+
+  mg-analytics-a:
+    image: apache/kafka:3.9.0
+    container_name: mg-analytics-a
+    ports:
+      - "9292:9292"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@mg-analytics-a:9293
+      KAFKA_LISTENERS: EXTERNAL://:9292,INTERNAL://:19292,CONTROLLER://:9293
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9292,INTERNAL://mg-analytics-a:19292
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: QzpkOQr9Svy1V5mzRqbtEQ
+
+  mg-analytics-b:
+    image: apache/kafka:3.9.0
+    container_name: mg-analytics-b
+    ports:
+      - "9294:9294"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@mg-analytics-b:9295
+      KAFKA_LISTENERS: EXTERNAL://:9294,INTERNAL://:19294,CONTROLLER://:9295
+      KAFKA_ADVERTISED_LISTENERS: EXTERNAL://localhost:9294,INTERNAL://mg-analytics-b:19294
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: EXTERNAL:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      CLUSTER_ID: ukRmGnXDRb2zjWeo0TH4XQ
+
+  mm2-core:
+    image: apache/kafka:3.9.0
+    container_name: mm2-core
+    depends_on:
+      - mg-core-a
+      - mg-core-b
+    volumes:
+      - ./mm2/mm2-multigroup-core.properties:/opt/kafka/config/mm2.properties:ro
+    command: /opt/kafka/bin/connect-mirror-maker.sh /opt/kafka/config/mm2.properties
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+
+  mm2-analytics:
+    image: apache/kafka:3.9.0
+    container_name: mm2-analytics
+    depends_on:
+      - mg-analytics-a
+      - mg-analytics-b
+    volumes:
+      - ./mm2/mm2-multigroup-analytics.properties:/opt/kafka/config/mm2.properties:ro
+    command: /opt/kafka/bin/connect-mirror-maker.sh /opt/kafka/config/mm2.properties
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"

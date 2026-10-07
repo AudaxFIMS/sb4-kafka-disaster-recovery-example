@@ -29,6 +29,7 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
     private final Consumer<Message<?>> delegate;
     private final LastProcessedTimestampTracker timestampTracker;
     private final AckObserver ackObserver;
+    private final DependencyGate dependencyGate;
 
     /** Container-managed acknowledgment: the commit follows the listener returning. */
     public IdempotentConsumer(String consumerName,
@@ -45,6 +46,20 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
                               Consumer<Message<?>> delegate,
                               LastProcessedTimestampTracker timestampTracker,
                               AckPolicy ackPolicy) {
+        this(consumerName, clusterName, idempotencyStore, delegate, timestampTracker, ackPolicy, DependencyGate.NONE);
+    }
+
+    /**
+     * @param dependencyGate holds records back while a {@code depends-on} group is down;
+     *                       requires a manual ack-mode, which startup validation enforces
+     */
+    public IdempotentConsumer(String consumerName,
+                              String clusterName,
+                              IdempotencyStore idempotencyStore,
+                              Consumer<Message<?>> delegate,
+                              LastProcessedTimestampTracker timestampTracker,
+                              AckPolicy ackPolicy,
+                              DependencyGate dependencyGate) {
         this.consumerName = consumerName;
         this.clusterName = clusterName;
         this.idempotencyStore = idempotencyStore;
@@ -54,10 +69,16 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
                 "Call Acknowledgment.acknowledge(), or set kafka-dr.consumers." + consumerName
                         + ".ack.owner=starter to let the starter do it (ack.async-acks=true if the handler "
                         + "acknowledges later, from another thread).");
+        this.dependencyGate = dependencyGate == null ? DependencyGate.NONE : dependencyGate;
     }
 
     @Override
     public void accept(Message<?> msg) {
+        // Checked before the idempotency mark: a record held back must come back unmarked.
+        if (DependencyNacks.heldBack(msg, false, dependencyGate, clusterName, consumerName)) {
+            return;
+        }
+
         if (!idempotencyStore.tryProcess(clusterName, consumerName, msg)) {
             log.info("[{}][{}] Duplicate skipped: idempotency key={}", clusterName, consumerName, idempotencyStore.extractKey(msg));
             // The handler is not invoked, so under a manual ack-mode nobody else would ever
@@ -80,6 +101,12 @@ public class IdempotentConsumer implements Consumer<Message<?>> {
             // failed, the mark has to go away or a redelivery would be dropped as a duplicate.
             // Nothing is acknowledged either, so the offset is not committed.
             idempotencyStore.rollback(clusterName, consumerName, List.of(msg));
+            if (dependencyGate.isDependencyFailure(clusterName, e) && dependencyGate.mayHoldBack(clusterName, msg)) {
+                // The handler could not reach a group it depends on. Throwing would spend the
+                // retry budget in seconds and then skip the record; a nack brings it back.
+                DependencyNacks.holdBack(msg, false, 0, dependencyGate, null, e, clusterName, consumerName);
+                return;
+            }
             throw e;
         }
 

@@ -30,6 +30,7 @@ public class BatchPassThroughConsumer implements Consumer<Message<?>> {
     private final Consumer<Message<?>> delegate;
     private final LastProcessedTimestampTracker timestampTracker;
     private final AckObserver ackObserver;
+    private final DependencyGate dependencyGate;
 
     /** Container-managed acknowledgment: the commit follows the listener returning. */
     public BatchPassThroughConsumer(String consumerName,
@@ -44,6 +45,20 @@ public class BatchPassThroughConsumer implements Consumer<Message<?>> {
                                     Consumer<Message<?>> delegate,
                                     LastProcessedTimestampTracker timestampTracker,
                                     AckPolicy ackPolicy) {
+        this(consumerName, clusterName, delegate, timestampTracker, ackPolicy, DependencyGate.NONE);
+    }
+
+    /**
+     * @param dependencyGate holds batches back while a {@code depends-on} group is down. Only
+     *                       before the handler: a failure inside it belongs to the handler in
+     *                       this mode, exactly as in plain Spring Cloud Stream.
+     */
+    public BatchPassThroughConsumer(String consumerName,
+                                    String clusterName,
+                                    Consumer<Message<?>> delegate,
+                                    LastProcessedTimestampTracker timestampTracker,
+                                    AckPolicy ackPolicy,
+                                    DependencyGate dependencyGate) {
         this.consumerName = consumerName;
         this.clusterName = clusterName;
         this.delegate = delegate;
@@ -53,11 +68,15 @@ public class BatchPassThroughConsumer implements Consumer<Message<?>> {
         this.ackObserver = new AckObserver(ackPolicy, clusterName, consumerName,
                 "Call Acknowledgment.acknowledge() on the kafka_acknowledgment header of the batch "
                         + "envelope before returning, or use batch.mode=split and let the starter commit.");
+        this.dependencyGate = dependencyGate == null ? DependencyGate.NONE : dependencyGate;
     }
 
     @Override
     public void accept(Message<?> envelope) {
         boolean batch = BatchMessages.isBatch(envelope);
+        if (DependencyNacks.heldBack(envelope, batch, dependencyGate, clusterName, consumerName)) {
+            return;
+        }
         if (batch) {
             log.info("[{}][{}] Batch of {} passed through",
                     clusterName, consumerName, ((java.util.List<?>) envelope.getPayload()).size());

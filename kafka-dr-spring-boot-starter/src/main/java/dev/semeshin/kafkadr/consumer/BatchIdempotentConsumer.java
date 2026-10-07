@@ -34,6 +34,7 @@ public class BatchIdempotentConsumer implements Consumer<Message<?>> {
     private final AckMode ackMode;
     private final boolean manualAck;
     private final boolean watermarkFollowsContainer;
+    private final DependencyGate dependencyGate;
 
     /**
      * @param ackMode configured acknowledgment mode; null means the container default (BATCH)
@@ -44,6 +45,21 @@ public class BatchIdempotentConsumer implements Consumer<Message<?>> {
                                    BatchHandler handler,
                                    LastProcessedTimestampTracker timestampTracker,
                                    AckMode ackMode) {
+        this(consumerName, clusterName, idempotencyStore, handler, timestampTracker, ackMode, DependencyGate.NONE);
+    }
+
+    /**
+     * @param ackMode        configured acknowledgment mode; null means the container default (BATCH)
+     * @param dependencyGate holds batches back while a {@code depends-on} group is down; requires
+     *                       MANUAL_IMMEDIATE, which startup validation enforces
+     */
+    public BatchIdempotentConsumer(String consumerName,
+                                   String clusterName,
+                                   IdempotencyStore idempotencyStore,
+                                   BatchHandler handler,
+                                   LastProcessedTimestampTracker timestampTracker,
+                                   AckMode ackMode,
+                                   DependencyGate dependencyGate) {
         this.consumerName = consumerName;
         this.clusterName = clusterName;
         this.idempotencyStore = idempotencyStore;
@@ -55,11 +71,16 @@ public class BatchIdempotentConsumer implements Consumer<Message<?>> {
         // COUNT_TIME commit on their own schedule, which the starter cannot observe.
         this.watermarkFollowsContainer =
                 ackMode == null || ackMode == AckMode.BATCH || ackMode == AckMode.RECORD;
+        this.dependencyGate = dependencyGate == null ? DependencyGate.NONE : dependencyGate;
     }
 
     @Override
     public void accept(Message<?> envelope) {
         boolean batch = BatchMessages.isBatch(envelope);
+        // Checked before deduplication: a batch held back must come back without marks.
+        if (DependencyNacks.heldBack(envelope, batch, dependencyGate, clusterName, consumerName)) {
+            return;
+        }
         // A late-initialized cluster whose binding was built in record mode would deliver
         // a single record here; handle it rather than failing with a ClassCastException.
         List<Message<?>> records = batch ? BatchMessages.split(envelope) : List.of(envelope);
@@ -100,6 +121,18 @@ public class BatchIdempotentConsumer implements Consumer<Message<?>> {
                 ? indexByIdentity(records).getOrDefault(toProcess.get(result.firstUnprocessedIndex()), -1)
                 : records.size();
         int lastCommittable = (stoppedAt < 0 ? 0 : stoppedAt) - 1;
+
+        int from = stoppedAt < 0 ? 0 : stoppedAt;
+        if (result.stopped() && dependencyGate.isDependencyFailure(clusterName, result.failure())
+                && dependencyGate.mayHoldBack(clusterName, records.get(from))) {
+            // A group the handler depends on is down. Throwing would spend the retry budget and
+            // then skip the tail; a nack from the stopping record commits the prefix before it and
+            // brings the rest back once the interval has passed.
+            DependencyNacks.holdBack(envelope, batch, from, dependencyGate, null, result.failure(),
+                    clusterName, consumerName);
+            advanceWatermarks(records, from);
+            return;
+        }
 
         int ackedThrough = acknowledge(envelope, records.size(), lastCommittable, !result.stopped());
 

@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class InMemoryIdempotencyStoreTest {
 
@@ -44,6 +45,14 @@ class InMemoryIdempotencyStoreTest {
     void sameKeyAcrossDifferentConsumersIsNotADuplicate() {
         store.tryProcess("primary", "orders-consumer", messageWithKey("shared-id"));
         assertThat(store.tryProcess("primary", "payments-consumer", messageWithKey("shared-id"))).isTrue();
+    }
+
+    @Test
+    void markIsSharedByEveryClusterOfTheConsumerGroup() {
+        // The cluster never enters the key: a record replicated by MirrorMaker and redelivered
+        // by the standby cluster of the same group after a failover is still a duplicate.
+        store.tryProcess("core-primary", "orders-consumer", messageWithKey("msg-1"));
+        assertThat(store.tryProcess("core-secondary", "orders-consumer", messageWithKey("msg-1"))).isFalse();
     }
 
     @Test
@@ -133,6 +142,37 @@ class InMemoryIdempotencyStoreTest {
         assertThat(store.tryProcess("primary", "c1", messageWithKey("old-1"))).isTrue();
         assertThat(store.tryProcess("primary", "c1", messageWithKey("old-2"))).isTrue();
         assertThat(store.tryProcess("primary", "c1", messageWithKey("fresh"))).isFalse();
+    }
+
+    @Test
+    void configuredTtlDecidesWhenAMarkExpires() {
+        InMemoryIdempotencyStore shortLived = new InMemoryIdempotencyStore(null, 60);
+        ConcurrentHashMap<String, Instant> entries = stateOf(shortLived);
+        entries.put("c1:expired", Instant.now().minusSeconds(120));
+        entries.put("c1:recent", Instant.now().minusSeconds(30));
+
+        shortLived.evictExpired();
+
+        assertThat(entries).containsOnlyKeys("c1:recent");
+        assertThat(shortLived.tryProcess("primary", "c1", messageWithKey("expired"))).isTrue();
+        assertThat(shortLived.tryProcess("primary", "c1", messageWithKey("recent"))).isFalse();
+    }
+
+    @Test
+    void expiredMarkIsNotADuplicateEvenBeforeEviction() {
+        InMemoryIdempotencyStore shortLived = new InMemoryIdempotencyStore(null, 60);
+        stateOf(shortLived).put("c1:stale", Instant.now().minusSeconds(61));
+
+        // No evictExpired run in between: the mark is past its ttl all the same.
+        assertThat(shortLived.tryProcess("primary", "c1", messageWithKey("stale"))).isTrue();
+        assertThat(shortLived.tryProcess("primary", "c1", messageWithKey("stale"))).isFalse();
+    }
+
+    @Test
+    void nonPositiveTtlIsRejected() {
+        assertThatThrownBy(() -> new InMemoryIdempotencyStore(null, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ttl-seconds must be positive");
     }
 
     @Test

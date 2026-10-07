@@ -21,6 +21,8 @@
         <java.version>17</java.version>
         <spring-cloud.version>2025.1.1</spring-cloud.version>
         <jacoco.version>0.8.12</jacoco.version>
+        <!-- Set by JaCoCo's prepare-agent; empty when it is skipped, so @{argLine} still resolves. -->
+        <argLine></argLine>
     </properties>
 
     <build>
@@ -52,6 +54,18 @@
                         <exclude>**/TimestampStore.class</exclude>
                         <exclude>**/AdminClientFactory.class</exclude>
                     </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- A test that loops forever must fail the build, not hang it: a JUnit timeout
+                         cannot stop a busy loop on the test's own thread. -->
+                    <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
+                    <!-- A loop that fills the heap must end the fork, and quickly — hence the small heap: out of memory, surefire's own
+                         command thread can die first and never receive the timeout's kill. -->
+                    <argLine>@{argLine} -Xmx512m -XX:+ExitOnOutOfMemoryError</argLine>
                 </configuration>
             </plugin>
         </plugins>
