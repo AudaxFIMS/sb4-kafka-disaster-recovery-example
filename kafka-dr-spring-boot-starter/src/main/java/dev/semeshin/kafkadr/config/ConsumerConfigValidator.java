@@ -33,11 +33,15 @@ final class ConsumerConfigValidator {
     }
 
     static void validate(KafkaClusterProperties props) {
+        validate(props, ClusterTopology.from(props));
+    }
+
+    static void validate(KafkaClusterProperties props, ClusterTopology topology) {
         Map<String, String> seenTopicGroups = new HashMap<>();
 
         for (ConsumerConfig consumer : props.getConsumers().values()) {
             String name = consumer.getName();
-            checkUniqueTopicAndGroup(consumer, seenTopicGroups);
+            checkUniqueTopicAndGroup(consumer, topology, seenTopicGroups);
             checkIdempotencyOverride(props, consumer);
             // Independent of batching: a DLQ that cannot be written to loses records
             // whether the consumer batches or not.
@@ -48,7 +52,8 @@ final class ConsumerConfigValidator {
             // and until it was validated a forgotten acknowledge() showed up as a consumer
             // group that quietly stopped committing.
             checkAckOwnership(consumer, ackMode);
-            checkContainerAckSettings(props, consumer, ackMode);
+            checkContainerAckSettings(consumer, ackMode, failoverOf(props, topology, consumer));
+            checkDependsOn(consumer, topology, ackMode);
 
             BatchConfig batch = consumer.getBatch();
             if (!batch.isEnabled()) {
@@ -117,8 +122,8 @@ final class ConsumerConfigValidator {
      * because the container is built inside a binder child context, sometimes only at
      * failover: spring-kafka's own assertion would fire there, hours after the deploy.
      */
-    private static void checkContainerAckSettings(KafkaClusterProperties props, ConsumerConfig consumer,
-                                                  AckMode ackMode) {
+    private static void checkContainerAckSettings(ConsumerConfig consumer, AckMode ackMode,
+                                                  KafkaClusterProperties.FailoverConfig failover) {
         AckConfig ack = consumer.getAck();
         if (ack == null) {
             return;
@@ -151,7 +156,7 @@ final class ConsumerConfigValidator {
             } else if (ack.getOwner() == AckPolicy.Owner.STARTER) {
                 log.warn("[{}] ack.async-acks with ack.owner=starter: the starter acknowledges on the consumer "
                         + "thread before the listener returns, so acknowledgments are never out of order", name);
-            } else if (props.getFailover().isSeekByTimestamp()) {
+            } else if (failover.isSeekByTimestamp()) {
                 // Every other setting that silences the watermark says so at startup; this
                 // one used to be the exception, and it silently removes a configured feature.
                 log.warn("[{}] ack.async-acks with failover.seek-by-timestamp: the acknowledgment arrives after "
@@ -163,12 +168,109 @@ final class ConsumerConfigValidator {
     }
 
     /**
+     * {@code depends-on} only keeps its promise — nothing skipped while a dependency is down —
+     * through negative acknowledgment, and a nack exists only under a manual ack-mode without
+     * out-of-order commits. Accepting it anywhere else would leave a configuration that reads as
+     * protected and loses records exactly when the dependency fails.
+     */
+    private static void checkDependsOn(ConsumerConfig consumer, ClusterTopology topology, AckMode ackMode) {
+        if (consumer.getDependsOn() == null || consumer.getDependsOn().isEmpty()) {
+            return;
+        }
+        String name = consumer.getName();
+        ClusterTopology.Group own = topology.groupOf(consumer);
+        for (String raw : consumer.getDependsOn()) {
+            String group = raw == null ? "" : raw.trim();
+            if (group.isEmpty()) {
+                throw new IllegalStateException("Consumer '%s' has an empty entry in depends-on".formatted(name));
+            }
+            if (topology.isEmpty()) {
+                continue;
+            }
+            if (topology.groups().stream().noneMatch(g -> g.name().equals(group))) {
+                throw new IllegalStateException("Consumer '%s' depends on cluster group '%s', which is not configured. "
+                        .formatted(name, group) + "Known groups: " + topology.groups().stream()
+                        .map(ClusterTopology.Group::name).toList());
+            }
+            if (own != null && own.name().equals(group)) {
+                throw new IllegalStateException(
+                        ("Consumer '%s' depends on its own cluster group '%s'. Its own group's failover already "
+                                + "covers that; depends-on is for the groups its handler writes to.")
+                                .formatted(name, group));
+            }
+        }
+        if (consumer.getDependsOnMaxHoldMs() <= 0) {
+            throw new IllegalStateException("Consumer '%s' has depends-on-max-hold-ms=%d; it must be positive"
+                    .formatted(name, consumer.getDependsOnMaxHoldMs()));
+        }
+        if (consumer.getDependsOnNackIntervalMs() <= 0) {
+            throw new IllegalStateException("Consumer '%s' has depends-on-nack-interval-ms=%d; it must be positive"
+                    .formatted(name, consumer.getDependsOnNackIntervalMs()));
+        }
+
+        BatchConfig batch = consumer.getBatch();
+        boolean split = batch.isEnabled() && batch.getMode() == BatchConfig.Mode.SPLIT;
+        boolean manual = ackMode == AckMode.MANUAL || ackMode == AckMode.MANUAL_IMMEDIATE;
+        if (split && ackMode != AckMode.MANUAL_IMMEDIATE) {
+            throw new IllegalStateException(
+                    ("Consumer '%s' uses depends-on with batch.mode=split, which needs ack-mode=MANUAL_IMMEDIATE: a "
+                            + "batch stopped by an unavailable dependency is held back from the stopping record, and "
+                            + "only MANUAL_IMMEDIATE commits the prefix before it. Current ack-mode: %s.")
+                            .formatted(name, ackMode == null ? "BATCH (container default)" : ackMode));
+        }
+        if (split && batch.getErrorPolicy() == BatchConfig.ErrorPolicy.SKIP_FAILED) {
+            throw new IllegalStateException(
+                    ("Consumer '%s' combines depends-on with batch.error-policy=skip-failed. A record that fails "
+                            + "because the dependency went down mid-batch would be skipped and committed with the "
+                            + "rest of the batch instead of held back — the loss depends-on exists to prevent. Use "
+                            + "error-policy=fail-batch.").formatted(name));
+        }
+        if (!manual) {
+            throw new IllegalStateException(
+                    ("Consumer '%s' uses depends-on, which needs ack-mode=MANUAL or MANUAL_IMMEDIATE. Records are "
+                            + "held back with a negative acknowledgment, which does not count as a delivery attempt; "
+                            + "without one, a dependency outage spends the retry budget in seconds and the records "
+                            + "are skipped. Current ack-mode: %s. Set kafka-dr.consumers.%s.properties.ack-mode=MANUAL "
+                            + "(and ack.owner=starter to keep acknowledgment out of the handler).")
+                            .formatted(name, ackMode == null ? "BATCH (container default)" : ackMode, name));
+        }
+        if (consumer.getAck() != null && Boolean.TRUE.equals(consumer.getAck().getAsyncAcks())) {
+            throw new IllegalStateException(
+                    ("Consumer '%s' combines depends-on with ack.async-acks=true. spring-kafka does not support "
+                            + "negative acknowledgment with out-of-order commits, so records could not be held back.")
+                            .formatted(name));
+        }
+        if (batch.isEnabled() && batch.getMode() == BatchConfig.Mode.STANDARD) {
+            log.warn("[{}] depends-on with batch.mode=standard: only the pause and the gate apply. A send that "
+                    + "fails inside the handler is the handler's to hold back — nack the envelope's "
+                    + "Acknowledgment; a thrown exception is retried and the batch is then skipped", name);
+        }
+        log.info("[{}] depends-on {}: paused while any of them is unavailable, held-back records redelivered "
+                        + "after {} ms, held at most {} ms while the dependency is available",
+                name, consumer.getDependsOn(), consumer.getDependsOnNackIntervalMs(), consumer.getDependsOnMaxHoldMs());
+    }
+
+    /** The consumer's group settings, or the global ones while no cluster is configured. */
+    private static KafkaClusterProperties.FailoverConfig failoverOf(KafkaClusterProperties props,
+                                                                   ClusterTopology topology,
+                                                                   ConsumerConfig consumer) {
+        ClusterTopology.Group group = topology.groupOf(consumer);
+        return group == null ? props.getFailover() : group.failover();
+    }
+
+    /**
      * Two consumers on the same topic and group are indistinguishable to a
      * {@code ListenerContainerCustomizer}, which only sees destination and group — so
-     * per-consumer container settings would be applied to the wrong one.
+     * per-consumer container settings would be applied to the wrong one. Across cluster
+     * groups the pair may repeat: those are different Kafkas, and the customizer tells their
+     * containers apart by binding name, which is unique per consumer and cluster — which is also
+     * why late-initialized bindings must carry theirs.
      */
-    private static void checkUniqueTopicAndGroup(ConsumerConfig consumer, Map<String, String> seen) {
-        String key = consumer.getTopic() + "|" + consumer.getGroup();
+    private static void checkUniqueTopicAndGroup(ConsumerConfig consumer, ClusterTopology topology,
+                                                 Map<String, String> seen) {
+        ClusterTopology.Group clusterGroup = topology.groupOf(consumer);
+        String key = (clusterGroup == null ? "" : clusterGroup.name()) + "|" + consumer.getTopic()
+                + "|" + consumer.getGroup();
         String previous = seen.put(key, consumer.getName());
         if (previous != null) {
             throw new IllegalStateException(

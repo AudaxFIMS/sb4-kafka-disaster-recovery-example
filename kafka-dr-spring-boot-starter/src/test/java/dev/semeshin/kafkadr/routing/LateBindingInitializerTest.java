@@ -1,5 +1,6 @@
 package dev.semeshin.kafkadr.routing;
 
+import dev.semeshin.kafkadr.config.ClusterTopology;
 import dev.semeshin.kafkadr.config.KafkaAdminHelper;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.ClusterConfig;
@@ -40,6 +41,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class LateBindingInitializerTest {
@@ -100,6 +102,16 @@ class LateBindingInitializerTest {
     }
 
     @Test
+    void constructionLooksUpNoFunctionBean() {
+        // A consumer with depends-on needs the DependencyGuard, which needs the lifecycle manager,
+        // which needs this bean: looking the function beans up in the constructor closed that cycle
+        // and silently lost those consumers for every late-initialized cluster.
+        newInitializer();
+
+        verifyNoInteractions(applicationContext);
+    }
+
+    @Test
     void skipsAlreadyInitializedClusters() {
         startupState.addInitializedCluster("primary");
         startupState.addInitializedCluster("secondary");
@@ -144,14 +156,14 @@ class LateBindingInitializerTest {
         newInitializer().checkAndInitializeClusters();
 
         staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eq("primary"),
-                eq("kafka-primary:9092"), any(KafkaClusterProperties.class)));
+                eq("kafka-primary:9092"), any(KafkaClusterProperties.class), any(ClusterTopology.class)));
     }
 
     @Test
     void startsBindingsImmediatelyWhenClusterAlreadyActive() {
         staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("secondary"), any())).thenReturn(true);
         staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("primary"), any())).thenReturn(false);
-        when(clusterManager.getActiveCluster()).thenReturn("secondary");
+        when(clusterManager.getActiveCluster("default")).thenReturn("secondary");
 
         newInitializer().checkAndInitializeClusters();
 
@@ -162,7 +174,7 @@ class LateBindingInitializerTest {
     void doesNotStartBindingsWhenClusterNotActive() {
         staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("primary"), any())).thenReturn(true);
         staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("secondary"), any())).thenReturn(false);
-        when(clusterManager.getActiveCluster()).thenReturn("secondary");
+        when(clusterManager.getActiveCluster("default")).thenReturn("secondary");
 
         newInitializer().checkAndInitializeClusters();
 
@@ -325,9 +337,72 @@ class LateBindingInitializerTest {
         assertThat(startupState.isInitialized("primary")).isFalse();
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void lateClusterBindsOnlyTheConsumersOfItsGroupAndNamesTheBinding() {
+        KafkaClusterProperties.ClusterGroupConfig core = new KafkaClusterProperties.ClusterGroupConfig();
+        core.setClusters(Map.of("primary", clusterCfg("core-a:9092", 1)));
+        KafkaClusterProperties.ClusterGroupConfig analytics = new KafkaClusterProperties.ClusterGroupConfig();
+        analytics.setClusters(Map.of("dc1", clusterCfg("an-a:9092", 1)));
+        Map<String, KafkaClusterProperties.ClusterGroupConfig> groups = new LinkedHashMap<>();
+        groups.put("core", core);
+        groups.put("analytics", analytics);
+        properties = new KafkaClusterProperties();
+        properties.setClusterGroups(groups);
+        ConsumerConfig orders = new ConsumerConfig();
+        orders.setTopic("orders");
+        orders.setGroup("dr-group");
+        orders.setClusterGroup("core");
+        ConsumerConfig scores = new ConsumerConfig();
+        scores.setTopic("scores");
+        scores.setGroup("dr-group");
+        scores.setClusterGroup("analytics");
+        properties.setConsumers(Map.of("orders", orders, "scores", scores));
+
+        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("analytics-dc1"), any())).thenReturn(true);
+        staticHelper.when(() -> KafkaAdminHelper.probeCluster(eq("core-primary"), any())).thenReturn(false);
+        when(clusterManager.getActiveCluster("analytics")).thenReturn("analytics-dc1");
+
+        newInitializer().checkAndInitializeClusters();
+
+        verify(binderFactory).getBinder(eq("analytics-dc1"), eq(MessageChannel.class));
+        ArgumentCaptor<ExtendedConsumerProperties<KafkaConsumerProperties>> props =
+                ArgumentCaptor.forClass(ExtendedConsumerProperties.class);
+        // One binding only: the consumer of the core group is not bound in analytics.
+        verify(binder).bindConsumer(eq("orders"), eq("dr-group"), any(MessageChannel.class), props.capture());
+        verify(bindingServiceProperties).getBindingProperties("scoresAnalyticsDc1-in-0");
+        verify(bindingServiceProperties, never()).getBindingProperties("ordersAnalyticsDc1-in-0");
+        // The container customizer matches containers by binding name.
+        assertThat(props.getValue().getBindingName()).isEqualTo("scoresAnalyticsDc1-in-0");
+        // Already the active cluster of its own group, so its bindings start right away.
+        verify(binding, atLeastOnce()).start();
+        assertThat(startupState.isInitialized("analytics-dc1")).isTrue();
+    }
+
+    @Test
+    void everyClusterIsProbedBeforeAnyIsInitialized() {
+        java.util.List<String> order = new java.util.ArrayList<>();
+        staticHelper.when(() -> KafkaAdminHelper.probeCluster(anyString(), any())).thenAnswer(inv -> {
+            order.add("probe " + inv.getArgument(0));
+            return true;
+        });
+        when(binderFactory.getBinder(anyString(), eq(MessageChannel.class))).thenAnswer(inv -> {
+            order.add("init " + inv.getArgument(0));
+            return binder;
+        });
+
+        new LateBindingInitializer(properties, properties.topology(), startupState, clusterManager,
+                binderFactory, bindingServiceProperties, applicationContext, Runnable::run)
+                .checkAndInitializeClusters();
+
+        // Probed together, so a cluster waiting out its timeout never delays another's initialization.
+        assertThat(order).containsExactly("probe primary", "probe secondary", "init primary", "init secondary");
+    }
+
     private LateBindingInitializer newInitializer() {
-        return new LateBindingInitializer(properties, startupState, clusterManager,
-                binderFactory, bindingServiceProperties, applicationContext);
+        // Probes on the calling thread: the static KafkaAdminHelper mock is thread-local.
+        return new LateBindingInitializer(properties, properties.topology(), startupState, clusterManager,
+                binderFactory, bindingServiceProperties, applicationContext, Runnable::run);
     }
 
     private static KafkaClusterProperties twoClusterProperties() {

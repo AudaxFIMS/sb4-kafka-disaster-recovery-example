@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafka DR Starter (EN)</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  html, body { margin: 0; background: #1b1f27; }
+  .slide-wrap { position: relative; width: min(100vw, 177.78vh); aspect-ratio: 16 / 9; margin: 0 auto 24px; overflow: hidden; }
+  .slide-wrap > section { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; box-sizing: border-box; transform-origin: 0 0; }
+  section * { margin: 0; box-sizing: border-box; }
+  section ul { padding-left: 1.2em; }
+  section table { border-collapse: collapse; width: 100%; }
+  section th, section td { padding: 0.35em 0.6em; border-bottom: 1px solid rgba(26, 36, 51, 0.15); vertical-align: top; }
+  x-shape { display: block; flex-shrink: 0; }
+  x-shape[kind="arrow-right"] { clip-path: polygon(0 30%, 60% 30%, 60% 0, 100% 50%, 60% 100%, 60% 70%, 0 70%); }
+  .x-icon { display: inline-block; flex-shrink: 0; }
+  aside { display: none; }
+  body.notes aside { display: block; position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 24px; background: rgba(15, 27, 45, 0.92); color: #f5f3ee; font: 22px/1.4 'IBM Plex Sans', Arial, sans-serif; }
+  .hint { color: #8fa0b8; font: 14px 'IBM Plex Sans', Arial, sans-serif; text-align: center; padding: 8px 0 16px; }
+  @media print {
+    @page { size: 1920px 1080px; margin: 0; }
+    html, body { background: none; }
+    .hint { display: none; }
+    .slide-wrap { width: 1920px; height: 1080px; aspect-ratio: auto; margin: 0; page-break-after: always; }
+    .slide-wrap > section { transform: none !important; }
+  }
+</style>
+</head>
+<body>
+<p class="hint">Kafka DR Starter (EN) · N — speaker notes · Ctrl/Cmd+P — PDF</p>
+<div class="slide-wrap"><section id="cover" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;justify-content:center;gap:40px">
+<div style="position:absolute;left:0px;top:0px;width:24px;height:1080px;background:#E07A2E"></div>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Spring Boot starter · Kafka disaster recovery</p>
+<h1 style="font-size:132px;font-weight:700;line-height:1.05;color:#F5F3EE">Kafka DR Starter</h1>
+<p style="font-size:48px;line-height:1.3;color:#B8C4D6;width:1400px">Switching between Kafka clusters with no loss, no duplicates and no failover code in the application</p>
+<p style="position:absolute;left:128px;bottom:96px;width:1664px;font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;color:#8FA0B8">Spring Boot 4 · Spring Cloud Stream 5 · spring-kafka 4 · Java 17+</p>
+<aside>A Spring Boot starter that makes a Spring Cloud Stream application resilient to the loss of a Kafka cluster. The key idea: the application writes ordinary handlers, while cluster switching, deduplication and restoring the read position are configuration.</aside>
+</section></div>
+<div class="slide-wrap"><section id="problem" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">The problem</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">What happens when a Kafka cluster goes down</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Consumers stop</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">The application is bound to one cluster. Moving to the standby means editing config and restarting by hand.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Producers lose messages</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">The send fails, and the handler often swallows the exception: the record is acknowledged but went nowhere.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Offsets don't match</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">The standby has offsets of its own. After a switch, records are skipped or processed twice.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Bridges between Kafkas break</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">A service moving data from one Kafka to another burns its retries in seconds and skips records.</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">2</p>
+</div>
+<aside>Four typical consequences of losing a cluster. Even with MirrorMaker 2 in place the data is on the standby, but the application does not move there by itself, and the offsets there differ. A separate class of problems is bridge services between Kafkas: when the target Kafka is down the send fails fast, the retries run out, and the record is skipped.</aside>
+</section></div>
+<div class="slide-wrap"><section id="solution" data-transition="fade" style="background:#E07A2E;color:#0F1B2D;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;justify-content:center;gap:48px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;color:#0F1B2D;letter-spacing:2px;text-transform:uppercase">The solution</p>
+<h2 style="font-size:80px;font-weight:600;line-height:1.15;color:#0F1B2D;width:1600px">The application writes ordinary handlers. Choosing the cluster, failing over, deduplicating and restoring the position is the starter's job — driven by configuration.</h2>
+<p style="font-size:36px;line-height:1.4;color:#1F2A3C;width:1500px">One YAML: clusters with priorities, consumers, producers. MirrorMaker 2 replicates the data between clusters.</p>
+<aside>The key message of the deck. The starter does not replace replication — MirrorMaker 2 does that. It answers the question "where do we read and write right now, and how do we avoid losing or duplicating data on the way over".</aside>
+</section></div>
+<div class="slide-wrap"><section id="architecture" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">How it works</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Observe, decide, act</h2>
+</div>
+<div style="display:flex;align-items:center;gap:24px">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">ClusterHealthChecker</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">AdminClient probes of every cluster at a set interval</p>
+</div>
+<x-shape kind="arrow-right" style="width:64px;height:36px;background:#E07A2E"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">ActiveClusterManager</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Thresholds, election by priority, failback-after, persisted state</p>
+</div>
+<x-shape kind="arrow-right" style="width:64px;height:36px;background:#E07A2E"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:24px">
+<div style="display:flex;flex-direction:column;gap:8px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px 36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">BindingLifecycleManager</p>
+<p style="font-size:26px;line-height:1.35;color:#4A5568">Stops and starts the consumers</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px 36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">ResilientProducer</p>
+<p style="font-size:26px;line-height:1.35;color:#4A5568">Writes to the active cluster</p>
+</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:24px;background:#0F1B2D;border-radius:16px;padding:32px 40px">
+<p style="font-size:30px;font-weight:600;color:#F5F3EE">Primary</p>
+<x-shape kind="arrow-right" style="width:72px;height:36px;background:#F0954F"></x-shape>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;color:#F0954F">MirrorMaker 2</p>
+<x-shape kind="arrow-right" style="width:72px;height:36px;background:#F0954F"></x-shape>
+<p style="font-size:30px;font-weight:600;color:#F5F3EE">Standby</p>
+<p style="font-size:26px;color:#B8C4D6">— replication outside the starter, same topic names</p>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">4</p>
+</div>
+<aside>Three roles. The health checker observes: every interval (5 s by default) it asks each cluster through an AdminClient. The manager decides: it counts consecutive failures and successes, elects the active cluster by priority, honours the failback-after window and persists its state. The executors act: consumer bindings are stopped on the old cluster and started on the new one, and the producer always writes to the active cluster. Replication is MirrorMaker 2 with IdentityReplicationPolicy, so topic names match.</aside>
+</section></div>
+<div class="slide-wrap"><section id="failover" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Failover</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">Failover in five steps — no human involved</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:24px">
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">01</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Probe</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">describeCluster every 5 s; the deep probe checks partition leaders</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">02</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Threshold</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">2 failures in a row mark a cluster unhealthy. A send that proves it down — at once</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">03</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Election</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">The healthy cluster with the highest priority becomes active</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">04</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Switch</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Consumers stop on the old cluster, start on the new one, seek by time</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">05</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Failback</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">After 3 healthy probes, and not before failback-after</p>
+</div>
+</div>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6;width:1500px">The failover state lives in a <span style="color:#F0954F">FailoverStateStore</span> (in-memory or Redis), so the failback-after window survives an application restart.</p>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">5</p>
+</div>
+<aside>The numbers are defaults; all are configurable, per cluster group too. The producer can speed things up: when a send proves a cluster unreachable, it is marked unhealthy immediately, without waiting for the probes. failback-after is a time of day before which automatic failback to the primary is not allowed — a night maintenance window, say. For the window to hold across restarts, the state is kept in an external store; the example uses Redis.</aside>
+</section></div>
+<div class="slide-wrap"><section id="no-loss" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Data integrity</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">No gaps and no duplicates after the switch</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<span class="x-icon" style="width:48px;height:48px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Search"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg></span>
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Seek by time</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">On the new cluster reading starts at the timestamp of the last processed record — each consumer has its own.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<span class="x-icon" style="width:48px;height:48px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Key"><circle cx="7.5" cy="15.5" r="4.5"/><line x1="10.7" y1="12.3" x2="20" y2="3"/><line x1="16" y1="7" x2="19" y2="10"/><line x1="18" y1="5" x2="21" y2="8"/></svg></span>
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Idempotency</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Records at the switch boundary are dropped by key in an IdempotencyStore: in-memory or your own, Redis for one.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<span class="x-icon" style="width:48px;height:48px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Lock"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Watermark after commit</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">The watermark moves only once the offset is committed. With ack.owner: starter the starter commits — handlers need no acknowledgment code.</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">6</p>
+</div>
+<aside>Three mechanisms work together. Seeking by time removes gaps: offsets differ between clusters, but MirrorMaker keeps record timestamps. The seek is approximate, so the boundary can repeat records; idempotency by message key drops them. Third, the watermark moves only after a real commit — otherwise a failover could jump past records that were never acknowledged.</aside>
+</section></div>
+<div class="slide-wrap"><section id="producer" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Producer</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">A verdict only on proof</h2>
+</div>
+<table style="font-size:28px;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif">
+<tr style="background:#E9E5DC"><th style="width:42%;text-align:left">The attempt ended with</th><th style="width:22%;text-align:left">Proof of</th><th style="width:36%;text-align:left">Then</th></tr>
+<tr><td>Not serializable; record too large or invalid</td><td>the message</td><td>SERIALIZATION / REJECTED, no retries; the cluster is fine</td></tr>
+<tr style="background:#FCFBF8"><td>Cluster unreachable; a retriable error outlasted the retries</td><td>a broken cluster</td><td>Failover of the whole group — consumers move with it</td></tr>
+<tr><td>Missing ACL, missing topic, Schema Registry failure</td><td>nothing</td><td>ALL_CLUSTERS_FAILED — a bridge holds the record</td></tr>
+</table>
+<p style="font-size:30px;line-height:1.4;color:#4A5568">We write <b style="color:#1A2433">to the active cluster only</b> — where the consumers read. A record on the standby would sit unread: MirrorMaker copies one way.</p>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">7</p>
+</div>
+<aside>The main lesson of the development. Every mistake towards "the message is at fault" is a loss for a bridge — the record goes to the DLQ. Every mistake towards "the cluster is at fault" is a needless failover of the whole group, and flapping. So: the message is at fault only for provable properties of the record; the cluster is broken only when it is unreachable or a retriable Kafka error outlasted the retries; everything else is held. Sends are always synchronous: the starter sets sync: true itself. The active-only rule came from a live run: detouring to a standby left records unread.</aside>
+</section></div>
+<div class="slide-wrap"><section id="groups" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Cluster groups</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">Several independent Kafkas in one application</h2>
+</div>
+<div style="display:flex;gap:48px">
+<div style="width:760px;display:flex;flex-direction:column;background:#17263D;border:1px solid #2A3B57;border-radius:16px;padding:36px 40px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;line-height:1.5;color:#D6DEEA">kafka-dr:<br>&#160;&#160;cluster-groups:<br>&#160;&#160;&#160;&#160;<span style="color:#F0954F">core</span>:<br>&#160;&#160;&#160;&#160;&#160;&#160;clusters: { a: …, b: … }<br>&#160;&#160;&#160;&#160;<span style="color:#F0954F">analytics</span>:<br>&#160;&#160;&#160;&#160;&#160;&#160;clusters: { a: …, b: … }<br>&#160;&#160;consumers:<br>&#160;&#160;&#160;&#160;orders-bridge:<br>&#160;&#160;&#160;&#160;&#160;&#160;cluster-group: core<br>&#160;&#160;&#160;&#160;&#160;&#160;depends-on: analytics</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Each group lives on its own</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Election, failover, failback-after, health check and environment — separately for core and analytics</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Producers by name</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">producer.to("order-analytics").send(…).orThrow() — the name hides which Kafka holds the topic</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">The old form still works</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">kafka-dr.clusters is the group default, with the same binder names and keys as before</p>
+</div>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">8</p>
+</div>
+<aside>A group is one logical Kafka with its own primary and standby clusters. An application can have several, and each fails over independently: analytics going down does not touch core. A physical cluster belongs to exactly one group, checked at startup. Producers are addressed by logical name, so moving a topic to another group is a configuration change only. Existing configurations without groups keep working unchanged.</aside>
+</section></div>
+<div class="slide-wrap"><section id="bridge" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:44px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Bridges between Kafkas · depends-on</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">While the target Kafka is down, records wait instead of being lost</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">1 · Pause</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">The consumer's binding is paused while the dependency group has no healthy cluster. No rebalance.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">2 · Gate</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Records already polled never reach the handler: a nack, redelivered after an interval. No retries spent.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">3 · Reclassify</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">A failed send inside the handler becomes a nack, not an exception. The idempotency mark is released.</p>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:32px;background:#0F1B2D;border-radius:16px;padding:32px 40px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;font-weight:600;color:#F0954F;white-space:nowrap">max-hold</p>
+<p style="font-size:28px;line-height:1.4;color:#D6DEEA">When the dependency is up yet the record still does not go through, it is held for at most depends-on-max-hold-ms (10 min). Time the group is down does not count.</p>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">9</p>
+</div>
+<aside>A bridge is a consumer in one Kafka that writes to another. Without depends-on, the target Kafka going down looks like a handler error: the retries run out in seconds and the record is skipped. With depends-on there are three layers: pause, a gate before the handler, and reclassifying the failure. A nack does not count as a delivery attempt, so the wait can last as long as the outage. max-hold only bounds the case "the group is up but the record is not taken" — a missing ACL, for instance — which would otherwise stall the thread forever. A manual ack-mode is required and checked at startup.</aside>
+</section></div>
+<div class="slide-wrap"><section id="features" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Features</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Also out of the box</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:24px">
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Batch</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">split per record or standard as an envelope; BatchOutcome with a verdict per record</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Manual ack</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">ack.owner: starter — the commit follows a successful handler, no code</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Late start</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">A cluster down at startup is attached once it comes back</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Topics everywhere</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">auto-create-topics creates them on every cluster up front, not at failover</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Schema Registry</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">A registry per cluster; Avro, JSON, native</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Startup checks</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Dangerous configurations are refused before they can lose data</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Health endpoint</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">The active cluster and each cluster's status in /actuator/health</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">DR_EVENT logs</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Every switch and seek on its own line; a debug mode with stack traces</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">10</p>
+</div>
+<aside>An overview of the remaining features. Batch: split mode runs records one by one with deduplication and commits the processed prefix; standard hands the handler the whole envelope. Startup checks are part of the philosophy: a configuration that looks protected but loses data — depends-on without a manual ack, or asynchronous sends — does not start at all.</aside>
+</section></div>
+<div class="slide-wrap"><section id="verified" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Verified</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">Tests and live runs on real clusters</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-size:120px;font-weight:700;line-height:1;color:#F5F3EE">620</p>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6">tests, 0 failures: 586 in the starter, 34 in the examples</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-size:120px;font-weight:700;line-height:1;color:#F5F3EE">94%</p>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6">instruction coverage of the starter, 87% of branches</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-size:120px;font-weight:700;line-height:1;color:#F5F3EE">7</p>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6">examples, each run live on its own docker stack</p>
+</div>
+</div>
+<p style="font-size:28px;line-height:1.5;color:#D6DEEA">Scenarios: failover and failback · losing 1 of 3 brokers without failover · a dependency group going down · max-hold · a topic created after startup · state restored from Redis after a restart</p>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">11</p>
+</div>
+<aside>Besides unit tests there was mutation testing: bugs were planted in a copy of the code and the tests had to catch them. Concurrency tests were run repeatedly. Most important were the live runs: several serious problems were found only by them, not by static review — for instance, that a record written to a standby sits unread, and that a binding created after startup could not be stopped.</aside>
+</section></div>
+<div class="slide-wrap"><section id="pros" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Pros</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">What the project gives you</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px 48px">
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Resilience by configuration.</b> No DR code in the handlers</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Automatic failover and failback</b> — with a failback-after window that survives a restart</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">No gaps and no duplicates</b> on the switch: seek by time plus idempotency</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Several Kafkas in one service</b>, and bridges between them without loss</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Honest error classification:</b> neither needless failovers nor silent loss</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Dangerous settings don't start</b> — the mistake shows at once, not in an incident</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Extensible:</b> your own idempotency, state and timestamp stores (Redis in the examples)</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Backward compatible:</b> single-group configurations work as before</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">12</p>
+</div>
+<aside>The main value: DR stops being the responsibility of every team writing consumers. The decisions are made once, in the starter, and backed by tests and live runs. Changes that need attention on upgrade are listed in the README's migration notes.</aside>
+</section></div>
+<div class="slide-wrap"><section id="cons" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Cons and limitations</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">What to know up front</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:28px 56px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Active-passive only</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">One cluster of a group is read and written; MirrorMaker 2 replicates one way</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">No exactly-once across Kafkas</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">A crash between send and commit repeats a record — the IdempotencyStore drops it</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Deduplication in memory by default</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Marks are lost on restart; production needs a store of its own</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">A held record stalls its thread</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">The consumer waits up to max-hold; after that, without a DLQ, the record is skipped</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Detection takes time</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Probe-driven failover takes interval × threshold; a failing send speeds it up</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Missing topic: a ~45 s block</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">The first send waits for the SCS provisioner — better to create topics before startup</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Tied to the stack</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Spring Boot 4, SCS 5, Kafka binder; registry errors read in Confluent 8.x shapes</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">A large configuration surface</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Groups, depends-on, ack, batch — it takes discipline and reading the README</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">13</p>
+</div>
+<aside>An honest list of limitations. The most fundamental is the active-passive model: the starter does no active-active and does not replicate data itself. Exactly-once across different Kafkas is impossible in principle — no transaction spans two clusters — hence the bet on the receiver's idempotency. A held record is a deliberate trade-off, "a visible delay beats a silent loss", bounded by max-hold. The ~45 s block on a missing topic is Spring Cloud Stream's own behaviour and is documented. Schema Registry error recognition was checked against the Confluent 8.2 sources; it is worth re-checking on a major client upgrade.</aside>
+</section></div>
+<div class="slide-wrap"><section id="fit" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Summary</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">When the starter fits, and when it doesn't</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FCFBF8;border:1px solid #E2DED5;border-top:6px solid #2F6FB3;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#2F6FB3">A good fit</h3>
+<ul style="font-size:28px;line-height:1.5;color:#4A5568">
+<li>Spring Cloud Stream on Kafka, primary and standby clusters with MirrorMaker 2</li>
+<li>Automatic failover is needed, without loss or duplicates</li>
+<li>A service exchanges data between several Kafkas</li>
+<li>Many teams need DR — done the same way</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FCFBF8;border:1px solid #E2DED5;border-top:6px solid #B4561B;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#B4561B">Not a fit</h3>
+<ul style="font-size:28px;line-height:1.5;color:#4A5568">
+<li>Active-active, or writing to several clusters at once</li>
+<li>Strict exactly-once across Kafkas</li>
+<li>Not Spring Cloud Stream: a plain Kafka client or Kafka Streams</li>
+<li>A single cluster with no standby — the starter adds nothing</li>
+</ul>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">14</p>
+</div>
+<aside>In short: the starter covers the typical active-passive DR scenario for Spring Cloud Stream, and exchange between independent Kafkas. Out of scope: active-active, exactly-once across clusters, other client stacks. Next steps: read the README and its migration notes, bring up the multi-group example, and choose stores for idempotency and failover state.</aside>
+</section></div>
+<script>
+  function fit() {
+    document.querySelectorAll('.slide-wrap').forEach(function (w) {
+      w.firstElementChild.style.transform = 'scale(' + (w.clientWidth / 1920) + ')';
+    });
+  }
+  window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  fit();
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'n' || e.key === 'N' || e.key === 'т' || e.key === 'Т') document.body.classList.toggle('notes');
+  });
+</script>
+</body>
+</html>

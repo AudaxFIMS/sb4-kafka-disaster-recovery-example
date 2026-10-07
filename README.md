@@ -29,7 +29,7 @@
 > **Side effects:**
 > - Generated Spring Cloud Function bean names change: `ordersPrimary` → `ordersConsumerPrimary` (derived from the new logical name). If you override `spring.cloud.stream.bindings.<bindingName>.*` properties anywhere, update them.
 > - `IdempotentConsumer` now scopes idempotency by consumer name (not topic) — multiple consumers on the same topic each have independent dedup state.
-> - Each topic must have exactly one producer entry; duplicates fail-fast at startup.
+> - Each topic must have exactly one producer entry per [cluster group](#cluster-groups); duplicates fail-fast at startup.
 >
 > See [Consumers](#consumers) and [Producers](#producers) for the full migration guide.
 
@@ -67,6 +67,9 @@ The project is structured as a multi-module Maven build:
 - **`kafka-dr-example-timestamp-seek`** — example with timestamp-based seek on failover
 - **`kafka-dr-example-multinode`** — example with multi-node clusters and deep probe health check
 - **`kafka-dr-example-redis-state`** — example with Redis-backed `FailoverStateStore` so `failback-after` survives application restarts
+- **`kafka-dr-example-mixed-batch`** — example with a batch consumer and a record consumer side by side
+- **`kafka-dr-example-integration-flow`** — example with Spring Integration flows around the DR chain
+- **`kafka-dr-example-multi-group`** — example with two independent Kafkas (cluster groups), bridged both ways with `depends-on`
 
 > **Important: Cross-cluster replication is required.**
 > This framework handles failover at the *application level* — switching producers and consumers between clusters. It does **not** replicate data between Kafka clusters. To ensure no messages are lost, configure cross-cluster replication independently using [MirrorMaker 2](https://kafka.apache.org/documentation/#georeplication), Confluent Cluster Linking, or Confluent Replicator.
@@ -96,6 +99,25 @@ The project is structured as a multi-module Maven build:
         +------------+   +------------+   +------------+
 ```
 
+With [cluster groups](#cluster-groups) one application works with several independent Kafkas, each a
+set of interchangeable clusters with its own active cluster and its own failover:
+
+```
+                 +---------------------------------------------+
+                 |                 Application                 |
+                 |  orders-bridge --to("order-analytics")-->   |
+                 |  <--to("order-scores")-- analytics-scorer   |
+                 +--------|---------------------------|--------+
+                          |                           |
+          cluster group "core"           cluster group "analytics"
+        +-------------+-------------+  +-------------+-------------+
+        |   core-a    |   core-b    |  | analytics-a | analytics-b |
+        |  (active)   |  (standby)  |  |  (active)   |  (standby)  |
+        +------+------+------^------+  +------+------+------^------+
+               |  MirrorMaker 2  |            |  MirrorMaker 2  |
+               +-----------------+            +-----------------+
+```
+
 ## Features
 
 - **N-cluster support** — configure any number of Kafka clusters with priority-based failover
@@ -105,7 +127,9 @@ The project is structured as a multi-module Maven build:
 - **Late binding initialization** — clusters that were unavailable at startup get binders, consumer bindings, and topic provisioning created automatically once reachable
 - **Synchronous send with ACK** — `sync: true` + `acks: all` ensures broker acknowledgement before returning success, preventing silent message loss
 - **Consumer binding management** — only the active cluster's consumers are running; others are stopped
-- **Producer cache cleanup** — dead cluster producers are closed to prevent reconnect noise
+- **Cluster groups** — several independent Kafkas in one application, each with its own primary and standbys, health check, failover, failback window and persisted state; consumers and producers are bound to one group each
+- **Bridging between Kafkas without loss** — `depends-on` pauses a consumer while a group it writes to is down and holds back records already in flight with a negative acknowledgment, so a dependency outage never spends the retry budget and skips records
+- **Producers addressed by name** — `producer.to("order-analytics").send(...)` keeps topic names and Kafka topology out of business code; `orThrow()` turns a failed send into the exception that gets the source record redelivered
 - **Idempotent message processing** — pluggable deduplication via `IdempotencyStore` interface; the store receives the full message, so custom implementations can dedup by any header or payload data (in-memory key-based default, Redis example included)
 - **Batch consumption** — per-consumer `batch.enabled`; the starter unpacks the batch so existing `Message<T>` handlers, deduplication and timestamp watermarks keep working unchanged, or hands over the raw envelope in standard Spring Cloud Stream form
 - **Manual acknowledgment on both paths** — in batch mode the starter owns the commit: it acknowledges the successful prefix, releases idempotency marks for the rest, and only then advances the watermark, so seek-by-timestamp never passes an uncommitted offset. On the record path the commit is the handler's by default, or the starter's with `ack.owner: starter`, and the watermark follows it either way
@@ -133,7 +157,9 @@ kafka-dr-spring-boot-starter/             # Framework (reusable JAR)
       KafkaAdminHelper.java                # Shared AdminClient utilities
       DynamicBindingRegistrar.java         # Generates binders, bindings, consumer beans
       BindingPropertyRouter.java           # Routes properties into the core / Kafka namespaces
-      ConsumerConfigValidator.java         # Startup checks for batch and acknowledgment settings
+      ConsumerConfigValidator.java         # Startup checks for batch, acknowledgment and depends-on settings
+      ClusterTopology.java                 # Clusters resolved into cluster groups; binder ids and bean names
+      ClusterTopologyValidator.java        # Startup checks: shared brokers, names, collisions, Schema Registry
       StartupClusterState.java             # Tracks initialized clusters
     consumer/
       MessageProcessor.java                # Marker interface — implement in your app
@@ -148,20 +174,26 @@ kafka-dr-spring-boot-starter/             # Framework (reusable JAR)
       BatchHandler.java                    # Seam between the registry and the batch consumer
       BatchOutcome.java                    # Per-record verdicts reported by a batch handler
       BatchConversionException.java        # Conversion failure carrying the record's position
-      LastProcessedTimestampTracker.java   # Tracks last committed timestamp per (topic, partition)
+      LastProcessedTimestampTracker.java   # Tracks last committed timestamp per (consumer, topic, partition)
       TimestampSeekRebalanceListener.java  # Seeks consumer by timestamp on failover
       TimestampStore.java                  # Interface — implement to persist timestamps across restarts
+      DependencyGate.java                  # depends-on as seen by a consumer: block, or reclassify a failure
+      DependencyNacks.java                 # Negative acknowledgments on behalf of the gate
     producer/
-      ResilientProducer.java               # Send with automatic failover
+      ResilientProducer.java               # Send with automatic failover; to(name), orThrow()
+      SendFailedException.java             # Raised by orThrow() when a message could not be sent
+      ClusterGroupUnavailableException.java # Raised by orThrow() when no cluster of the group took it
     routing/
-      ActiveClusterManager.java            # Cluster election state machine
-      BindingLifecycleManager.java         # Start/stop bindings on cluster switch
+      ActiveClusterManager.java            # Cluster election state machine, one per cluster group
+      BindingLifecycleManager.java         # Start/stop/pause bindings on cluster switch
       LateBindingInitializer.java          # Creates bindings for recovered clusters
-      ClusterSwitchedEvent.java            # Spring event on failover/failback
+      DependencyGuard.java                 # Pauses and resumes consumers for depends-on
+      ClusterSwitchedEvent.java            # Spring event on failover/failback of a group
+      ClusterGroupAvailabilityEvent.java   # Spring event: a group lost its last healthy cluster, or regained one
       FailoverStateStore.java              # Interface — persist failover state (active cluster + Instant)
       InMemoryFailoverStateStore.java      # Default fallback (registered as @Bean in auto-config)
     health/
-      ClusterHealthChecker.java            # Periodic health probe
+      ClusterHealthChecker.java            # Periodic health probe, scheduled per cluster group
     idempotency/
       IdempotencyStore.java                # Interface — implement for custom backends
       InMemoryIdempotencyStore.java        # Default fallback (registered as @Bean in auto-config)
@@ -261,11 +293,32 @@ kafka-dr-example-integration-flow/         # Example: Spring Integration flows a
   src/main/resources/
     application.yml                        # Record consumer + batch consumer + invoices consumer
 
+kafka-dr-example-multi-group/              # Example: two independent cluster groups, bridged both ways
+  src/main/java/dev/semeshin/kafkadr/
+    MultiGroupExampleApp.java              # Entry point
+    model/
+      OrderEvent.java                      # Published to core, bridged to analytics
+      OrderScore.java                      # Computed in analytics, sent back to core
+    handler/
+      OrderBridgeProcessor.java            # core -> analytics: to(name).send(...).orThrow(), depends-on analytics
+      ScoringProcessor.java                # analytics -> core, depends-on core
+      ScoreSinkProcessor.java              # End of the round trip, counts distinct orders
+      AuditProcessor.java                  # Topic "audit" in both groups, same consumer group
+    controller/
+      MultiGroupController.java            # REST API: orders, audit per group, per-group status
+  src/test/java/.../
+    MultiGroupConfigurationTest.java       # Asserts the shipped YAML resolves to the intended topology
+  src/main/resources/
+    application.yml                        # cluster-groups core + analytics, depends-on both ways
+
 docker-compose.yml                         # 3 single-node Kafka + MirrorMaker 2 + Schema Registry + Redis
 docker-compose-multinode.yml               # 2 clusters × 3 nodes + MirrorMaker 2 + Schema Registry + Redis
+docker-compose-multigroup.yml              # 2 cluster groups × 2 clusters + one MirrorMaker 2 per group
 mm2/
   mm2.properties                           # MirrorMaker 2 config (single-node clusters)
   mm2-multinode.properties                 # MirrorMaker 2 config (multi-node clusters)
+  mm2-multigroup-core.properties           # MirrorMaker 2 for group "core" (core-a -> core-b)
+  mm2-multigroup-analytics.properties      # MirrorMaker 2 for group "analytics" (analytics-a -> analytics-b)
 ```
 
 ## Quick Start
@@ -529,6 +582,78 @@ What the module encodes, and why:
 as comments: same-thread execution, propagation out of the flow, filtering as a success, and the
 gateway-versus-send difference in exception types.
 
+### Example: Several Independent Kafkas (`kafka-dr-example-multi-group`)
+
+Two [cluster groups](#cluster-groups) in one application. `core` carries the orders and receives
+the scores back; `analytics` receives the orders and computes the scores. Each group has a
+primary and a standby, its own MirrorMaker and its own failover. Both bridges declare the group
+they write to under [`depends-on`](#bridging-between-groups-depends-on).
+
+```bash
+# 1. Infrastructure: 2 groups × 2 clusters + one MirrorMaker 2 per group
+docker compose -f docker-compose-multigroup.yml up -d
+
+# 2. Build the starter
+mvn -f kafka-dr-spring-boot-starter/pom.xml clean install -DskipTests
+
+# 3. Run (port 8085)
+mvn -f kafka-dr-example-multi-group/pom.xml spring-boot:run
+```
+
+```bash
+# Orders go core -> analytics -> core; the counters show the round trip
+curl -X POST 'localhost:8085/api/orders?count=5'
+curl -s localhost:8085/api/status | jq '.roundTrip'
+# { "bridgedToAnalytics": 5, "scoredInAnalytics": 5, "completedInCore": 5 }
+
+# Topic "audit" exists in both groups — only the producer name says which one
+curl -X POST 'localhost:8085/api/audit?group=core&message=hello'
+curl -X POST 'localhost:8085/api/audit?group=analytics&message=hello'
+curl -s localhost:8085/api/status | jq '.audit'
+# { "core": 1, "analytics": 1 }
+```
+
+**One group fails over, the other does not notice:**
+
+```bash
+docker stop mg-core-a
+# DR_EVENT [core-a] -> [core-b] CLUSTER SWITCH
+# DR_EVENT [orders-bridge] [orders] Seeked partition 0 to offset 4 (timestamp=...)
+# [core-b][orders-bridge] Duplicate skipped: ...        <- the boundary record, filtered
+curl -s localhost:8085/api/status | jq '.groups | map_values(.activeCluster)'
+# { "core": "core-b", "analytics": "analytics-a" }
+```
+
+**A dependency is down entirely — the bridge waits instead of skipping:**
+
+```bash
+docker stop mg-analytics-a mg-analytics-b
+# DR_EVENT [analytics] Cluster group 'analytics' UNAVAILABLE — no healthy cluster
+# DR_EVENT [orders-bridge] Paused: dependency group 'analytics' has no healthy cluster
+curl -X POST 'localhost:8085/api/orders?count=3'     # accepted by core, not bridged yet
+
+docker start mg-analytics-a mg-analytics-b
+# DR_EVENT [orders-bridge] Resumed: every dependency [analytics] is available again
+curl -s localhost:8085/api/status | jq '.roundTrip'   # all orders complete, none skipped
+```
+
+A consumer returning to a cluster that was stopped hard may take up to `session.timeout.ms`
+(45 s by default) to rejoin its consumer group: the coordinator first waits for the member it
+lost to time out. That is Kafka's behaviour, not the starter's — the records are waiting, not
+lost.
+
+What the module encodes, and why:
+
+| Choice | Reason |
+|---|---|
+| `to("order-analytics")`, never a topic name | The handler does not know which Kafka the topic lives in; moving it to another group is a YAML change |
+| `.orThrow()` after every bridging send | A failed send that returns normally is acknowledged and lost; the exception is what lets `depends-on` hold the record back |
+| The source key travels with the bridged record | No transaction spans two Kafkas, so a crash between send and commit sends twice; the consumer on the other side drops the copy by key |
+| `ack-mode: MANUAL` + `ack.owner: starter` on the bridges | `depends-on` holds records back with a nack, which exists only under manual acknowledgment; the starter commits, the handler has no acknowledgment code |
+| `depends-on-max-hold-ms: 120000` on the bridges | A record the target group is up for yet does not take (a missing ACL, say) is held two minutes, then takes the ordinary failure path; shorter than the 10-minute default so the demo shows it |
+| One MirrorMaker per group, replicating only inside it | A group is one logical Kafka; replicating into another group's clusters would mix two independent systems |
+| `audit` + consumer group `audit` in both groups | Two topics in two Kafkas; the starter tells their listener containers apart by binding name |
+
 ### Example: Restart-Safe `failback-after` (Redis-backed `FailoverStateStore`)
 
 The `kafka-dr-example-redis-state` module demonstrates the pluggable `FailoverStateStore` SPI. The example pins the app to whatever cluster it failed over to until 22:00 local time **even if the app is restarted in between**.
@@ -703,6 +828,214 @@ kafka-dr:
             basic.auth.credentials.source: USER_INFO
             basic.auth.user.info: ${SR_EU_WEST_USER}:${SR_EU_WEST_PASS}
 ```
+
+> **Separate registries need the same schema IDs.** The Confluent wire format stores a numeric
+> schema ID in every record, not the schema. MirrorMaker copies those bytes unchanged, so after a
+> failover a consumer on the standby looks the primary's ID up in the standby's registry. With
+> independent registries the IDs differ: deserialization fails, or — worse — succeeds against the
+> wrong schema. Registries of clusters that replicate into each other must share IDs: Confluent
+> Schema Linking, a replica in `IMPORT` mode, or one registry with its own DR. Clusters in
+> different [cluster groups](#cluster-groups) do not have this problem — a bridge deserializes in
+> one group and serializes anew in the other.
+
+> **A registry set in `properties` replaces the per-cluster ones.** Consumer and producer
+> `properties` land on the binding, i.e. on every cluster of the group, so a
+> `configuration.schema.registry.url` there sends all of them to one registry. The starter logs a
+> warning at startup when that happens while clusters have registries of their own.
+
+### Cluster Groups
+
+A **cluster group** is one logical Kafka: a set of interchangeable clusters kept in sync by
+replication, with its own active cluster, health check, failover, failback window and persisted
+state. Several groups make one application work with several independent Kafkas — each with
+its own primary and standbys — and move data between them.
+
+```yaml
+kafka-dr:
+  cluster-groups:
+    core:
+      clusters:
+        primary:   { bootstrap-servers: core-dc1:9092, priority: 1 }
+        secondary: { bootstrap-servers: core-dc2:9092, priority: 2 }
+      failover:
+        failback-after: "23:00:00"
+
+    analytics:
+      health-check:                 # narrows the global health-check for this group only
+        deep-probe: true
+        failure-threshold: 1
+      default-environment:          # between the global default-environment and the cluster's own
+        spring.cloud.stream.kafka.binder.configuration:
+          schema.registry.url: http://analytics-sr:8081
+      clusters:
+        dc1: { bootstrap-servers: an-dc1:9092, priority: 1 }
+        dc2: { bootstrap-servers: an-dc2:9092, priority: 2 }
+
+  consumers:
+    orders-consumer:
+      cluster-group: core           # every consumer and producer belongs to one group
+      topic: orders
+      handler: processOrder
+
+  producers:
+    order-analytics:
+      cluster-group: analytics
+      topic: order-analytics
+```
+
+Groups are independent: losing a cluster in `core` never moves a consumer or producer of
+`analytics`, and each group may fail over at a different moment, to a different cluster.
+
+**What can be set per group.** Every field is optional and narrows the global setting of the
+same name; a field left unset inherits it.
+
+| Setting | Notes |
+|---|---|
+| `health-check.*` | All fields, `interval-ms` included — each group is probed on its own schedule |
+| `failover.seek-by-timestamp`, `failover.failback-after` | An empty `failback-after: ""` switches a global window off for the group |
+| `default-environment` | Merged key by key: global → group → cluster, nearest wins |
+| `auto-create-topics` | A group's clusters get only that group's topics |
+
+`idempotency`, `debug` and `default-consumer/producer-properties` stay global.
+
+**Names.** Binder names are global to Spring Cloud Stream, and two groups may both have a
+`primary`, so a cluster's binder id is `<group>-<cluster>`; bean and binding names carry the
+group too.
+
+| | Group `default` | Group `core`, cluster `primary` |
+|---|---|---|
+| Binder id (also in logs, `SendResult.cluster()`, health) | `primary` | `core-primary` |
+| Consumer function bean / binding | `ordersConsumerPrimary` / `…-in-0` | `ordersConsumerCorePrimary` / `…-in-0` |
+| `FailoverStateStore` state | the single-state methods | `save/load/clear("core", …)` |
+
+**The `clusters` form is the group `default`.** Existing configurations keep working unchanged
+— same binder, binding and bean names, same persisted keys. To add a second Kafka, move the
+existing clusters under `cluster-groups.default.clusters` (a group named `default` keeps the
+historical names, so nothing is renamed) and add the new group next to it. `clusters` and
+`cluster-groups` cannot be combined.
+
+`cluster-group` may be omitted while there is only one group to fall back to; with several, a
+consumer or producer without one is rejected.
+
+**Checked at startup:**
+
+| Rejected | Why |
+|---|---|
+| A broker address listed by two clusters — in different groups or the same one | Across groups the two Kafkas would not be independent; within a group a cluster would be its own failover target. Addresses are compared without scheme, case or whitespace; a DNS alias of the same broker is not caught |
+| A group without clusters, an unknown or missing `cluster-group` | — |
+| Two clusters resolving to the same binder id, two consumers to the same bean name | `core-primary` in group `default` and `primary` in group `core`, for one |
+| Group or cluster names other than letters, digits, `-`, `_` | They become part of property keys and bean names |
+| Two producers for one topic in one group | The same topic in two groups is fine — they are different Kafkas |
+| Two consumers with the same topic and consumer group in one group | The same pair in two groups is fine — containers are told apart by binding name |
+
+**Several groups at run time:**
+
+- `ActiveClusterManager` keeps one election per group: `getActiveCluster(group)`,
+  `getActiveClusters()`, `hasHealthyCluster(group)`, `getClustersByPriority(group)`,
+  `getHealthStatuses(group)`, `getGroups()`. The methods without a group keep working with one
+  group and throw with more, naming the method to use instead — except `getHealthStatuses()`,
+  which returns every cluster of every group, keyed by binder id.
+- `ClusterSwitchedEvent.getGroup()` names the group that switched;
+  `ClusterGroupAvailabilityEvent` reports a group losing its last healthy cluster, or regaining
+  one.
+- The health endpoint keeps its flat layout with one group; with several every detail is
+  prefixed, e.g. `group.core.activeCluster`, `group.core.cluster.primary: UP`.
+- A custom `FailoverStateStore` must implement the per-group methods and return `true` from
+  `supportsGroups()` — see
+  [Surviving application restarts](#surviving-application-restarts-failoverstatestore).
+
+> **Replicate inside a group, never across.** Each group needs its own MirrorMaker (or Cluster
+> Link), replicating only between that group's clusters. Replicating one group's topics into
+> another group's clusters mixes two independent Kafkas. `docker-compose-multigroup.yml` runs
+> one MirrorMaker 2 per group.
+
+#### Bridging between groups: `depends-on`
+
+A consumer whose handler writes to another group cannot do its work while that group is down.
+Throwing is the wrong signal there: every failed delivery counts against the retry budget, the
+send fails fast so the budget is gone in seconds, and the container then **skips the record**.
+`depends-on` makes the starter hold such records back instead:
+
+```yaml
+kafka-dr:
+  consumers:
+    orders-bridge:
+      cluster-group: core
+      depends-on: analytics              # several groups: comma-separated
+      depends-on-nack-interval-ms: 1000  # optional, the default
+      depends-on-max-hold-ms: 600000     # optional, the default (10 min)
+      topic: orders
+      handler: bridgeOrder
+      ack:
+        owner: starter                   # optional: the starter commits, the handler does not
+      properties:
+        ack-mode: MANUAL                 # required
+```
+
+```java
+public void bridgeOrder(Message<OrderEvent> message) {
+    producer.to("order-analytics")
+            .send(message.getPayload(), IdempotencyStore.kafkaKey(message, null))  // keep the key
+            .orThrow();                                                            // never swallow
+}
+```
+
+Three mechanisms, each covering what the one before cannot:
+
+1. **Pause.** While any dependency has no healthy cluster, the consumer's binding is paused. It
+   keeps its partitions — no rebalance, nothing to seek — and the records wait in Kafka. It
+   resumes once every dependency is back, and starts paused if its own group fails over in the
+   meantime.
+2. **Gate before the handler.** A record already polled when the pause takes effect does not
+   reach the handler or the idempotency store; it is negatively acknowledged and redelivered after
+   `depends-on-nack-interval-ms`. A nack does not count as a delivery attempt, so it can never
+   run out.
+3. **Reclassified failure.** A send that fails before any health check noticed — the record was
+   already in the handler — marks the target clusters unhealthy on the way. When the handler's
+   exception arrives the dependency is reported down, or the exception carries a
+   `ClusterGroupUnavailableException` for it, and the record is nacked instead of rethrown, with
+   its idempotency mark released. In `batch.mode: split` the nack starts at the record that stopped
+   the batch, which also commits the records before it.
+
+**How long a record is held.** The send itself fails at once — `orThrow()` throws, nothing
+blocks. What is held is the *source* record: not committed, not sent to the DLQ, redelivered every
+`depends-on-nack-interval-ms`. A nack re-seeks every partition of the poll and the consumer thread
+sleeps the interval, so while a record is held its consumer thread makes no progress (other
+threads of a `concurrency > 1` consumer do).
+
+- **The dependency is down** (no healthy cluster): the binding is paused and records wait in Kafka
+  for as long as the outage lasts. No limit — this is what `depends-on` is for.
+- **The dependency is up, yet the record is not taken** — a missing ACL, a schema registry that
+  cannot be reached, any failure that proves nothing against the message: the record is held for
+  at most `depends-on-max-hold-ms` (10 minutes by default) of time the dependency was up. After
+  that it is no longer nacked and takes the ordinary failure path — the binder's retries, then the
+  DLQ or a skip — with an error in the log naming the record; it is not held again on those
+  retries, only a later record of the partition starts a new count. Time the dependency spends
+  down does not count, and does not reset the count either: a record cannot buy itself more time
+  by taking the group down. A record without topic, partition and offset headers cannot be counted,
+  so it is not held while the dependency is up.
+
+**Checked at startup:**
+
+| Mode | Required |
+|---|---|
+| record | `ack-mode: MANUAL` or `MANUAL_IMMEDIATE` |
+| `batch.mode: split` | `ack-mode: MANUAL_IMMEDIATE`, `batch.error-policy: fail-batch` — `skip-failed` would skip and commit a record that failed because the dependency went down mid-batch |
+| `batch.mode: standard` | `ack-mode: MANUAL` or `MANUAL_IMMEDIATE` and a `Message<List<T>>` handler (a `List<T>` handler has no `Acknowledgment` and is rejected). Only the pause and the gate apply: a send failing inside the handler is the handler's to hold back — nack the envelope's `Acknowledgment`; a thrown exception is retried and the batch then skipped. A warning at startup says so |
+
+`ack.async-acks: true` is rejected — spring-kafka does not support a nack with out-of-order
+commits. So are an unknown group, the consumer's own group (its own failover already covers
+that), and a non-positive interval.
+
+**Exactly-once across Kafkas is not possible** — no transaction spans two clusters. Between the
+send and the commit a crash sends the record twice; pass the source key on, and the consumer on
+the other side drops the copy through its `IdempotencyStore`.
+
+> A handler that swallows a failed send — ignores the `SendResult`, or catches the exception —
+> makes the record look processed, and it is committed. `depends-on` can hold back only what it
+> is told about: end bridging sends with `orThrow()`. The same goes for a `BatchOutcome` handler:
+> `discard(i, e)` is a verdict that the record is done, so never discard a record whose send
+> failed — mark it `retry(i, e)`, which stops the batch there and lets `depends-on` hold it back.
 
 ### Default Binder Environment
 
@@ -1030,7 +1363,7 @@ The shape is derived from the handler's signature; nothing declares it in config
 | `void h(List<Message<T>>)` | `split` | Called once with the deduplicated batch |
 | `BatchOutcome h(List<Message<T>>)` | `split` | Called once; reports a verdict per record — see [Manual Acknowledgment](#manual-acknowledgment) |
 | `void h(Message<List<T>>)` | `standard` | Raw envelope, headers included |
-| `void h(List<T>)` | `standard` | Payloads only |
+| `void h(List<T>)` | `standard` | Payloads only — so no `Acknowledgment`: rejected at startup with `ack-mode: MANUAL`/`MANUAL_IMMEDIATE`, under which offsets would never be committed |
 
 Payloads are converted element by element to the declared type, honouring `content-type` exactly as in record mode. A mismatch between the shape and `batch.mode` fails at startup with the signature to use.
 
@@ -1290,7 +1623,20 @@ kafka-dr:
           value.serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
 ```
 
-Producers are also a map keyed by logical name. `ResilientProducer.send(topic, ...)` resolves the topic to the corresponding producer entry; each topic must have exactly one producer configured.
+Producers are also a map keyed by logical name, and that name is how a producer is addressed:
+
+```java
+producer.to("order-events-producer").send(order, order.getOrderId());
+producer.to("order-events-producer").sendBatch(messages);
+```
+
+The name says nothing about the topic or the Kafka behind it, so renaming a topic or moving it
+to another [cluster group](#cluster-groups) is a configuration change only. `to(name)` is also the
+only way to reach a topic that exists in several groups.
+
+`ResilientProducer.send(topic, ...)` keeps working: it resolves the topic to its producer entry
+as long as the topic is configured in one group, and fails with a pointer to `to(name)` when it
+is not. A topic has exactly one producer per cluster group; duplicates fail at startup.
 
 ### Topic Provisioning
 
@@ -1313,6 +1659,24 @@ That is why the starter forces the binder-level flag to `false` on every cluster
 it in `default-environment` or per cluster if you deliberately want the binder to create
 topics as well.
 
+**A topic that appears after startup.** Spring Cloud Stream cannot create a consumer's binding
+while its topic is missing; it retries every 30 s and creates the binding once the topic
+exists. Every DR binding is created stopped, and the binding service's own record of such a
+late binding is a placeholder that cannot start, stop or pause it. The starter keeps the real
+binding from the binder's `BindingCreatedEvent`: it starts it at once when its cluster is the
+active one of its group, and starts, stops, pauses and resumes it on later failovers like any
+other — otherwise the consumer would sit idle until a restart, or keep reading a cluster the
+group has left.
+
+> **Known limitation — create topics before the application sends to them.** With
+> `auto-create-topics: false`, the first send to a topic that does not exist yet blocks the
+> sending thread for about 45 s: Spring Cloud Stream creates producer bindings lazily, on the
+> first send, and its `KafkaTopicProvisioner` keeps retrying the partition lookup. On a
+> consumer thread — a `depends-on` bridge — that can exceed `max.poll.interval.ms` and trigger
+> a rebalance. Later sends fail at once and are held as described in
+> [Producer Error Handling](#producer-error-handling). Create topics before the application
+> starts, or keep `auto-create-topics: true`.
+
 ### Health Check & Failover Tuning
 
 ```yaml
@@ -1328,6 +1692,8 @@ kafka-dr:
 ```
 
 **Time to fail over** ≈ `failure-threshold × interval-ms` + the binding switch. With the defaults that is `2 × 5000ms` ≈ **10 s**. Lower `failure-threshold` to 1 for the fastest reaction (at the cost of reacting to transient blips), or raise it to debounce flapping clusters. The probe cadence is wall-clock (`fixedRate`): probes for all clusters run **in parallel**, each bounded by `timeout-ms` (the bound covers the initial socket connection setup too), so a slow or unreachable cluster never stretches the interval or delays the other clusters' probes. `recovery-threshold` is intentionally higher than `failure-threshold` — leave a failed cluster quickly, return to it cautiously.
+
+With [cluster groups](#cluster-groups) every setting here can be narrowed per group, and each group is probed on its own schedule at its own `interval-ms`, from its own probe pool — probes hanging in one group never delay another group's past their deadline. Deep probe checks only the topics of the group being probed. A round cut short by application shutdown reports nothing, so stopping the app never fails a group over.
 
 **Health check modes:**
 
@@ -1375,28 +1741,49 @@ kafka-dr:
 | 3 | Secondary down at 11:00 | Switch → tertiary | Switch → tertiary (failover is always instant) |
 | 4 | Secondary recovers at 11:05 | Instant failback → secondary | **Stay on tertiary** |
 | 5 | Primary recovers at 12:00 | Instant failback → primary | **Stay on tertiary** |
-| 6 | Clock reaches 00:00 | — | Failback → primary (highest priority healthy) |
+| 6 | Clock reaches 23:59:59 | — | Failback → primary (highest priority healthy) at the next health round |
 
-> **Note:** `failback-after` blocks **all** failback (return to any higher-priority cluster) while the current cluster is healthy. Failover (leaving an unhealthy cluster) is always immediate regardless of this setting. After a successful failback the gate resets — subsequent failovers will again be held until the configured time.
+> **Note:** `failback-after` blocks **all** failback (return to any higher-priority cluster) while the current cluster is healthy. Failover (leaving an unhealthy cluster) is always immediate regardless of this setting. After a successful failback the gate resets — subsequent failovers will again be held until the configured time. The value is checked at startup: anything `LocalTime.parse` rejects (`"11pm"`, say) fails startup rather than the first failback.
 
 #### Surviving application restarts (`FailoverStateStore`)
 
-The `failback-after` gate is enforced via a pluggable `FailoverStateStore`. On every cluster switch the manager records the active cluster name and the failover `Instant` to the store; on a successful failback (or whenever a non-failover initial selection happens) it clears the store.
+The `failback-after` gate is enforced via a pluggable `FailoverStateStore`. On every cluster switch the manager records the active cluster name and the failover `Instant` to the store; on a successful failback, and when the preferred cluster is elected at startup — no failover, nothing to hold — it clears the store.
 
 ```java
 public interface FailoverStateStore {
     void save(FailoverState state);
     Optional<FailoverState> load();
     void clear();
+
+    // One state per cluster group. Defaults delegate to the single-state methods above.
+    default void save(String group, FailoverState state) { save(state); }
+    default Optional<FailoverState> load(String group) { return load(); }
+    default void clear(String group) { clear(); }
+
+    // True when the three methods above keep a separate state per group.
+    default boolean supportsGroups() { return false; }
+
     record FailoverState(String activeCluster, Instant failoverAt) {}
 }
 ```
 
-On startup `ActiveClusterManager` calls `load()`:
+Every [cluster group](#cluster-groups) fails over on its own, so its state is kept on its own.
+With one group the defaults are exactly right and existing stores need no change. With several,
+the defaults would let groups overwrite each other's state — and restore a cluster of one group
+as the active cluster of another after a restart — so the starter **refuses to start** unless the
+store implements the three per-group methods with a key per group and says so by returning `true`
+from `supportsGroups()`. An explicit declaration rather than a guess from the class's methods, which
+proxies and wrappers would make unreliable. `activeCluster` is the binder id (`core-primary`).
+
+When an existing store gains the per-group methods, map the group `default` to the key it used
+before — as `RedisFailoverStateStore.keyOf` does. A new key for it would make the first restart
+after the change find no state and elect the primary inside a failback window.
+
+On startup `ActiveClusterManager` calls `load(group)` for every group:
 
 - **No persisted state** → standard initial election (priority order).
 - **Persisted state, but `now` is at or past the next occurrence of `failback-after` after `failoverAt`** → state is cleared and the priority cluster is elected as usual. This is the date-aware part: if the app was down for hours or days, the gate has already expired and the priority cluster wins.
-- **Persisted state, threshold not yet reached** → the persisted cluster is restored as active, `failoverOccurred` is set, and the gate continues to block any failback until the threshold passes — even if a higher-priority cluster reports healthy first.
+- **Persisted state, threshold not yet reached** → the persisted cluster is restored as active, `failoverOccurred` is set, and the gate continues to block any failback until the threshold passes — even if a higher-priority cluster reports healthy first. The initial election waits for the restored cluster's report in the first health round: healthy, it is elected at once (no `recovery-threshold` wait) and its consumers start; down, the best healthy cluster is elected instead.
 
 The runtime gate (`isFailbackBlocked`) uses the same date-aware computation so the live behavior matches what the startup decision saw.
 
@@ -1413,7 +1800,7 @@ public class MyFailoverStateStore implements FailoverStateStore {
 }
 ```
 
-The `kafka-dr-example-redis-state` module includes `RedisFailoverStateStore` as a reference implementation (Redis hash `kafka-dr:failover-state` with `activeCluster` and `failoverAt` fields).
+The `kafka-dr-example-redis-state` module includes `RedisFailoverStateStore` as a reference implementation: a Redis hash with `activeCluster` and `failoverAt` fields, keyed `kafka-dr:failover-state` for the `default` group — the key it always used — and `kafka-dr:failover-state:<group>` for every other group.
 
 | Scenario | In-memory store (default) | Durable store (e.g. Redis) |
 |---|---|---|
@@ -1422,7 +1809,7 @@ The `kafka-dr-example-redis-state` module includes `RedisFailoverStateStore` as 
 | Failover at 23:00, restart at 09:00 next day, `failback-after: "22:00"` | App boots on priority cluster | Threshold = next day 22:00 → still blocked → restores secondary |
 
 How it works:
-1. `IdempotentConsumer` tracks the latest `RECEIVED_TIMESTAMP` per topic via `LastProcessedTimestampTracker`
+1. Each consumer tracks the latest committed `RECEIVED_TIMESTAMP` per topic partition via `LastProcessedTimestampTracker`
 2. On cluster switch, the new consumer receives partition assignments
 3. `TimestampSeekRebalanceListener` calls `consumer.offsetsForTimes()` with the last timestamp and seeks to the matching offset
 4. `IdempotentConsumer` provides additional deduplication for messages in the timestamp boundary window
@@ -1475,6 +1862,12 @@ By default, idempotency uses **Kafka record key** (`KafkaHeaders.RECEIVED_KEY`) 
 
 Messages without a key (or without the configured header) are processed without idempotency check (with a warning log).
 
+Marks are scoped by consumer name and never by cluster: a record that MirrorMaker replicated
+and the standby redelivers after a failover is a duplicate on any cluster of the group. Consumer
+names are unique application-wide and each consumer belongs to one [cluster group](#cluster-groups),
+so groups never see each other's marks. `ttl-seconds` applies to the in-memory store too, and a
+mark past its TTL no longer counts as a duplicate even before the periodic eviction removes it.
+
 The framework provides `InMemoryIdempotencyStore` as default fallback — it is registered as a `@Bean` in `KafkaDrAutoConfiguration` with `@ConditionalOnMissingBean(IdempotencyStore.class)`. This ensures proper ordering: Spring processes application `@Component` beans first, then auto-configuration `@Bean` methods. If any `IdempotencyStore` is already registered, the in-memory fallback is skipped.
 
 #### Custom `IdempotencyStore`
@@ -1526,6 +1919,18 @@ default void rollback(String clusterName, String consumerName, List<Message<?>> 
 
 `rollback` matters beyond batching. `tryProcess` marks a message *before* the handler runs, so a failure between the two steps leaves it recorded as done and the redelivery Kafka performs is dropped as a duplicate. The window is narrow with auto-commit and as wide as the application wants it with manual acknowledgment. Implement it wherever keys can be deleted — `InMemoryIdempotencyStore` removes the entry, `RedisIdempotencyStore` issues a batched `DEL`.
 
+> **Migration note:** a `List<T>` handler in `batch.mode: standard` with `ack-mode: MANUAL` or `MANUAL_IMMEDIATE` now fails startup. It never committed an offset — payloads carry no `Acknowledgment` — so the consumer replayed everything on each restart. Declare it `Message<List<T>>` and acknowledge through its `KafkaHeaders.ACKNOWLEDGMENT` header, or use an automatic ack-mode.
+
+> **Migration note:** two settings are now checked at startup instead of later. `kafka-dr.idempotency.ttl-seconds` is applied by the in-memory store — it used to be ignored there, always 3600 s — so a value of 0 or less now fails startup, and a large one really keeps marks that long in heap. A `failback-after` that is not a time of day (`"11pm"`) now fails startup instead of the first failback.
+
+> **Migration note:** when a send proves the active cluster down, the failover it forces — `ClusterSwitchedEvent` and the binding switch — is now published on a `kafka-dr-failover-events-<group>` thread, after `send()` has returned, no longer on the sending thread. The active cluster itself changes before `send()` returns. A listener that relied on running on the sender's thread, or on the switch being complete when `send()` returns, must not.
+
+> **Migration note:** producer bindings are now always synchronous. A `sync: false` under `default-producer-properties` or a producer's `properties` fails startup; without the setting the starter sets `sync: true` itself.
+
+> **Migration note:** code that records watermarks itself must do so through `LastProcessedTimestampTracker.forConsumer(consumerName)`. Calling `update`/`advance` on the injected bean records under the old unscoped key, which no seek reads any more; the first such call logs a warning.
+
+> **Migration note:** `TimestampStore` keys are now `<consumer>:topic-partition` — each consumer has its own watermark. The interface is unchanged. Entries written under the previous `topic-partition` format are never read again: they were the position of whichever consumer wrote them, and a consumer added later would seek by it and skip records it never processed. So, as with the previous key change, the first failover after upgrading falls back to committed offsets once; the idempotency store drops what that replays. `TimestampStore` has no delete, so the old entries stay in the store until removed there.
+
 > **Migration note:** `TimestampStore` keys changed from a bare topic name to `topic-partition`. The interface itself is unchanged — the key stays an opaque `String` — so implementations such as the example `RedisTimestampStore` need no edits. Entries written under the old format are simply never read again, so the first start after upgrading falls back to committed offsets once.
 
 > **Migration note:** the SPI changed from `tryProcess(String consumerName, String messageId)` to `tryProcess(String clusterName, String consumerName, Message<?> message)`. Key extraction moved from `IdempotentConsumer` into the store: existing key-based implementations should call `extractKey(message)` (or the static `IdempotencyStore.kafkaKey(message, keyHeader)`) and handle the `null` (no key) case by returning `true`.
@@ -1549,7 +1954,7 @@ What the flag changes:
 | `ClusterHealthChecker` — basic probe, deep probe, probe timeout | `DEBUG` with `e.getMessage()` | `WARN` with the stack trace |
 | `ResilientProducer` — cluster unavailable, retry attempt, serialization error | `WARN` with `e.getMessage()` | `WARN` with the stack trace |
 | `ResilientProducer` — retries exhausted, all clusters unavailable (single and batch) | Message and counts only, no cause | Same line plus the stack trace of the exception that ended the retry ladder |
-| `BindingLifecycleManager` — start/stop binding, producer cache cleanup | `ERROR` with `e.getMessage()` | `ERROR` with the stack trace |
+| `BindingLifecycleManager` — start/stop/pause/resume binding | `ERROR` with `e.getMessage()` | `ERROR` with the stack trace |
 
 The flag is read once at startup: `DynamicBindingRegistrar` pushes it into `KafkaAdminHelper` (a static utility, so there is nothing for Spring to inject into) before the first probe runs, and the bean-side users read it from `KafkaClusterProperties`.
 
@@ -1624,17 +2029,41 @@ if (!result.allSent()) {
 
 Sending in a loop would re-run the retry ladder for every message against a cluster that is already gone — 500 messages times `failure-threshold` doomed attempts before the failover. Here the first message that reports the cluster unavailable ends the attempt for the entire remainder.
 
-On failover only the **unsent tail** moves to the next cluster; resending the whole batch would duplicate everything the previous cluster already acknowledged. A `SerializationException` is treated as that message's problem rather than the cluster's: it is marked failed and the batch continues on the same cluster.
+On failover only the **unsent tail** moves to the next cluster; resending the whole batch would duplicate everything the previous cluster already acknowledged. A message proven at fault — unserializable, an invalid schema, refused by the broker for what it is — is marked failed and the batch continues on the same cluster; see [Producer Error Handling](#producer-error-handling) for what counts as proof.
 
 `BatchSendResult` holds one `SendResult` per input message, in order, plus `sent()`, `failed()`, `allSent()`, `failures()` and `clusters()`. There is deliberately no single `cluster` field — a batch that failed over mid-way was written to more than one, and that is exactly the case a single field would misreport.
 
 Sends stay synchronous. `StreamBridge.send` returns a boolean rather than a future, so going async would cost the very failure signal that drives the failover; throughput belongs to `linger.ms` and `batch.size` in per-producer `properties.configuration`.
+
+`StreamBridge` caches one output channel per cluster and producer it has used, and once the cache is full it unbinds the eldest — possibly a producer still in use. After a failover and a failback every producer has used two clusters, so the starter sets `spring.cloud.stream.dynamic-destination-cache-size` to at least the number of producers times the clusters of their group, unless it is set explicitly (a warning is logged if an explicit value is too small).
 
 The `messageId` parameter (or `KafkaHeaders.KEY` header) is used as:
 - **Kafka record key** — determines partition assignment
 - **Idempotency key** — `IdempotentConsumer` deduplicates by `KafkaHeaders.RECEIVED_KEY` on the consumer side
 
 No system headers are injected by the framework — only user-provided headers and `KafkaHeaders.KEY` are sent.
+
+**Results and failures.** `SendResult` reports `success()`, `cluster()` (binder id), `messageId()`,
+`group()` and, on failure, `failure()`:
+
+| `Failure` | Meaning | `orThrow()` throws |
+|---|---|---|
+| `NO_HEALTHY_CLUSTER` | No cluster of the group was healthy; nothing was attempted | `ClusterGroupUnavailableException` |
+| `ALL_CLUSTERS_FAILED` | No cluster of the group took the message, and nothing proves the message at fault: the clusters were unreachable or broken, or did not take it for a reason that is no verdict on the message (a missing ACL, a topic missing on a cluster, a schema registry down, an exception that is not Kafka's) | `ClusterGroupUnavailableException` |
+| `SERIALIZATION` | The message itself could not be serialized — including an invalid schema (a registry 422) or Jackson failing on the payload; another cluster would fail the same way. Not the registry's own state or health, which every cluster may have its own of: 404 (subject not found), 409 or "Incompatible schema" (against that registry's history), error code 42205 (a registry in `READONLY`/`IMPORT` mode, as a standby replica is), and an unreachable or failing registry — a timeout, a reset connection, a proxy's page, 401/403/408/429/5xx | `SendFailedException` |
+| `REJECTED` | The broker refused the record for what it is — too large, invalid, an invalid timestamp — or the topic name is invalid; no failover is triggered | `SendFailedException` |
+
+The rule behind it: **a message is failed only on proof that the message is at fault, and a
+cluster is marked down only on proof that the cluster is broken.** A failure that proves neither
+gets neither verdict, so a `depends-on` bridge holds the record back rather than losing it — for
+at most `depends-on-max-hold-ms` while the group is up. Missing ACLs belong there: ACLs are kept
+per cluster and MirrorMaker does not copy them, so they say nothing about the message.
+
+`orThrow()` returns the result when the message was sent, and throws otherwise —
+`BatchSendResult.orThrow()` does the same for a batch, reporting a group failure ahead of single
+messages. From a consumer handler that exception is the point: it is what gets the source record
+redelivered instead of committed, and what [`depends-on`](#bridging-between-groups-depends-on)
+recognizes as the dependency being down.
 
 ## How Failover Works
 
@@ -1645,7 +2074,9 @@ No system headers are injected by the framework — only user-provided headers a
 3. Unreachable clusters: only environment properties generated (no blocking)
 4. All consumers start with `auto-startup=false`
 5. All clusters begin as `UNHEALTHY`
-6. First health check elects first healthy cluster immediately
+6. First health check elects first healthy cluster immediately — except in a group restored from
+   the `FailoverStateStore`, whose election waits for the restored cluster's report and prefers it
+   while it is healthy
 7. `BindingLifecycleManager` starts consumers on elected cluster
 8. `LateBindingInitializer` monitors unreachable clusters in background
 
@@ -1675,23 +2106,38 @@ Cluster switch: primary -> secondary
   5. IdempotentConsumer deduplicates any overlap in the boundary window
 ```
 
-Watermarks are tracked **per (topic, partition)**. A per-topic watermark is the maximum across partitions, which would seek a lagging partition past records it never processed.
+Watermarks are tracked **per (consumer, topic, partition)**. A per-topic watermark is the maximum across partitions, which would seek a lagging partition past records it never processed — and a watermark shared by two consumers of the same topic is the maximum of the two, which would seek the one that lags past records *it* never processed. Since a consumer belongs to one [cluster group](#cluster-groups), the same topic name in two groups never shares a watermark either. Each group fails over on its own, and only the consumers of the group that switched seek.
 
 The watermark follows what was **committed**, not what was processed. With manual acknowledgment a batch can be handled and acknowledged at different moments; advancing the watermark first would make the seek skip records whose offsets never landed, and nothing would redeliver them. When a partition has no watermark — nothing processed yet, or an `ack-mode` whose commits the starter cannot observe, such as `TIME` or `COUNT` on either path — the seek is skipped and the consumer falls back to committed offsets.
 
 > This mechanism assumes topic names are identical across clusters. The bundled MirrorMaker 2 configuration uses `IdentityReplicationPolicy` for that reason; switching to `DefaultReplicationPolicy`, which prefixes topics with the source cluster alias, silently breaks the lookup.
 
 ```
-DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=1714003200000)
+DR_EVENT [orders-consumer] [demo-events] Seeked partition 0 to offset 1542 (timestamp=1714003200000)
 ```
 
 ### Producer Error Handling
 
-| Error type | Behavior |
-|---|---|
-| **Serialization** | Warn + skip, cluster stays healthy |
-| **Cluster unavailable** | Immediate `forceUnhealthy` + failover |
-| **Other errors** | Retry up to `failure-threshold` times, then failover |
+| Attempt ended with | Proof of | Behavior |
+|---|---|---|
+| **Serialization** (not the schema registry's connection or state), **record refused** (`RecordTooLargeException`, `RecordBatchTooLargeException`, `InvalidRecordException`, `InvalidTimestampException`), **invalid topic** | the message | Not retried. That message fails (`SERIALIZATION`/`REJECTED`), the cluster stays healthy, the rest goes on |
+| **Cluster unavailable** (`StreamBridge` false, timeout, network; a "topic not present in metadata" timeout only when a quick `describeCluster` probe confirms the cluster does not answer — otherwise the topic is missing there — or a broker that has just restarted has not loaded it yet — which proves nothing, and for 10 s sends fail at once instead of waiting `max.block.ms` each. The same for an expired record ("Expiring N record(s)") when a `describeTopics` probe finds the cluster answering without the topic: deleted while the producer still knew it, which would otherwise read as an outage, fail the group over and back on every send) | the cluster | Immediate `forceUnhealthy` + failover. The active cluster changes at once, so the next send goes to the new one; the binding switch is published on a dedicated thread, never on the sender's — usually a listener thread that would otherwise stop its own container |
+| **Retriable Kafka error** (`NotEnoughReplicas`, `CorruptRecord`…) outlasting `failure-threshold` retries | the cluster | `forceUnhealthy` + failover — also on the last cluster, which leaves the group unavailable |
+| **Anything else** — a non-retriable broker answer (missing ACL), a topic missing on a cluster that answers (both not retried), the schema registry failing (retried; recognized in the shapes Confluent 8.x throws, including a Kafka `TimeoutException` or `DisconnectException` carrying the registry's `RestClientException` or an I/O error, which must not read as the broker), an exception that is not Kafka's (retried) | neither | `ALL_CLUSTERS_FAILED` for it and, untried, for the rest of the batch — the cause is likely the same for all. Nothing is marked, the group does not fail over, and the message is not written to another cluster (below): a `depends-on` bridge holds it until the cause is gone, or for at most `depends-on-max-hold-ms` |
+
+Messages are written to the group's **active cluster only** — that is where its consumers read,
+and replication runs from it to the standbys, not back. A message written to a standby while
+another cluster is active would sit there unread until a failover made that standby active. So a
+cluster that does not take a message is either proven broken, and the whole group — consumers
+included — fails over, or the message is held.
+
+One engine serves `send` and `sendBatch`. A cluster lost during a batch stays lost for the rest of
+it, so a dead cluster costs one attempt rather than one per message.
+
+Sends are always synchronous: the starter sets `sync: true` on every DR producer binding, and a
+`sync: false` in `default-producer-properties` or a producer's `properties` fails startup —
+asynchronously, `StreamBridge` reports success before the broker answers, and none of the above
+could happen.
 
 ## Key Design Decisions
 
@@ -1722,6 +2168,15 @@ DR_EVENT [demo-events] Seeked partition 0 to offset 1542 (timestamp=171400320000
 | Sparse completion kept in the idempotency store, not in offsets | Kafka commits a per-partition watermark, so an arbitrary subset cannot be acknowledged; `BatchOutcome` verdicts map onto a contiguous commit plus the store as the "already done" set |
 | Conversion failures in batch mode throw instead of falling back | Substituting a raw `String` would put a foreign type into a `List<T>` and surface as a `ClassCastException` inside business logic, far from the record that caused it |
 | `sendBatch` abandons a dead cluster after the first failed message | One message proves the cluster is gone; retrying the ladder for the rest costs `size × failure-threshold` doomed attempts before the failover |
+| Cluster groups, each with its own election | Independent Kafkas fail independently; one election per group keeps a failover in one from moving the consumers and producers of another |
+| `clusters` resolved into the group `default` with unchanged names | Existing deployments keep binder, binding and bean names and persisted keys; moving clusters under `cluster-groups.default` adds groups without renaming anything |
+| Binder id `<group>-<cluster>` | Binder names are global to Spring Cloud Stream and two groups may both have a `primary` |
+| One broker address, one cluster entry | Shared brokers make two groups fail together, or a cluster its own standby; rejected at startup rather than discovered during a failover |
+| Containers matched to consumers by binding name | Destination and consumer group may repeat across groups; the binding name passed to a `KafkaListenerContainerCustomizer` is unique per consumer and cluster |
+| `depends-on` holds records back with a nack, not an exception | A nack does not count as a delivery attempt; a fast-failing send would otherwise exhaust the retries in seconds and the container would skip the record |
+| `depends-on` requires manual acknowledgment | A nack exists only there; accepting it elsewhere would leave a configuration that reads as protected and loses records exactly when the dependency fails |
+| Producers addressed by name | Business code does not encode which Kafka a topic lives in; a topic present in several groups stays addressable |
+| Watermark per consumer | Two consumers of one topic progress independently; a shared watermark is the maximum, and the one that lags would seek past its own unprocessed records |
 
 ## Tech Stack
 

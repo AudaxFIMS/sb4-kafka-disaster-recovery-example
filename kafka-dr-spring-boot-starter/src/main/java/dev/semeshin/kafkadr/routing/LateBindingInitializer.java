@@ -1,10 +1,14 @@
 package dev.semeshin.kafkadr.routing;
 
+import dev.semeshin.kafkadr.concurrent.DaemonExecutors;
+import dev.semeshin.kafkadr.config.ClusterTopology;
 import dev.semeshin.kafkadr.config.KafkaAdminHelper;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties;
 import dev.semeshin.kafkadr.config.StartupClusterState;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cloud.stream.binder.Binder;
 import org.springframework.cloud.stream.binder.Binding;
 import org.springframework.cloud.stream.binder.BinderFactory;
@@ -22,8 +26,14 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 
 /**
@@ -41,64 +51,136 @@ public class LateBindingInitializer {
     private static final Logger log = LoggerFactory.getLogger(LateBindingInitializer.class);
 
     private final KafkaClusterProperties properties;
+    private final ClusterTopology topology;
     private final StartupClusterState startupState;
     private final ActiveClusterManager clusterManager;
     private final BinderFactory binderFactory;
     private final BindingServiceProperties bindingServiceProperties;
-    private final Map<String, Consumer<Message<?>>> functionBeans;
+    private final ApplicationContext applicationContext;
     private final Map<String, Binding<?>> lateBindings = new ConcurrentHashMap<>();
+    /** Probes the uninitialized clusters in parallel, so one group's dead clusters never delay another's. */
+    private final Executor probes;
+    /** The probe pool when this bean created it, shut down with it. */
+    private final ExecutorService ownedExecutor;
 
+    /** Resolves the topology itself — for use outside a Spring context. */
     public LateBindingInitializer(KafkaClusterProperties properties,
                                   StartupClusterState startupState,
                                   ActiveClusterManager clusterManager,
                                   BinderFactory binderFactory,
                                   BindingServiceProperties bindingServiceProperties,
                                   ApplicationContext applicationContext) {
+        this(properties, properties.topology(), startupState, clusterManager, binderFactory,
+                bindingServiceProperties, applicationContext);
+    }
+
+    /**
+     * The consumer function beans are deliberately not looked up here. A consumer with
+     * {@code depends-on} needs the {@code DependencyGuard} to be built, the guard needs the
+     * binding lifecycle manager, and the manager needs this bean — looking the function beans up
+     * now would close that cycle and silently lose those consumers for every cluster initialized
+     * late. They are resolved when a cluster is initialized, long after the context is up.
+     */
+    @Autowired
+    public LateBindingInitializer(KafkaClusterProperties properties,
+                                  ClusterTopology topology,
+                                  StartupClusterState startupState,
+                                  ActiveClusterManager clusterManager,
+                                  BinderFactory binderFactory,
+                                  BindingServiceProperties bindingServiceProperties,
+                                  ApplicationContext applicationContext) {
+        this(properties, topology, startupState, clusterManager, binderFactory, bindingServiceProperties,
+                applicationContext, null);
+    }
+
+    /**
+     * @param probes runs the reachability probes; null for a pool with a thread per cluster
+     */
+    LateBindingInitializer(KafkaClusterProperties properties,
+                           ClusterTopology topology,
+                           StartupClusterState startupState,
+                           ActiveClusterManager clusterManager,
+                           BinderFactory binderFactory,
+                           BindingServiceProperties bindingServiceProperties,
+                           ApplicationContext applicationContext,
+                           Executor probes) {
+        if (probes == null) {
+            this.ownedExecutor = DaemonExecutors.fixedPool("kafka-dr-late-probe-", topology.clusters().size());
+            this.probes = ownedExecutor;
+        } else {
+            this.ownedExecutor = null;
+            this.probes = probes;
+        }
         this.properties = properties;
+        this.topology = topology;
         this.startupState = startupState;
         this.clusterManager = clusterManager;
         this.binderFactory = binderFactory;
         this.bindingServiceProperties = bindingServiceProperties;
+        this.applicationContext = applicationContext;
+    }
 
-        // Collect all consumer function beans
-        this.functionBeans = new ConcurrentHashMap<>();
-        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers().values()) {
-            for (String cluster : properties.getClusters().keySet()) {
-                String beanName = KafkaClusterProperties.functionName(consumer.getName(), cluster);
-                try {
-                    @SuppressWarnings("unchecked")
-                    Consumer<Message<?>> bean =
-                            applicationContext.getBean(beanName, Consumer.class);
-                    functionBeans.put(beanName, bean);
-                } catch (Exception e) {
-                    log.debug("Function bean '{}' not found: {}", beanName, e.getMessage());
-                }
-            }
+    private static boolean reachable(String cluster, CompletableFuture<Boolean> probe) {
+        try {
+            return Boolean.TRUE.equals(probe.join());
+        } catch (CompletionException | CancellationException e) {
+            log.debug("[{}] Late-initialization probe failed: {}", cluster, e.getMessage());
+            return false;
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private Consumer<Message<?>> functionBean(String cluster, String consumerName, String beanName) {
+        try {
+            return applicationContext.getBean(beanName, Consumer.class);
+        } catch (Exception e) {
+            // A missing function bean means a consumer that never consumes on this cluster:
+            // worth a warning, not a debug line.
+            log.warn("[{}][{}] Function bean '{}' not available, consumer skipped on this cluster: {}",
+                    cluster, consumerName, beanName, e.getMessage());
+            return null;
+        }
+    }
+
+    @PreDestroy
+    void shutdown() {
+        if (ownedExecutor != null) {
+            ownedExecutor.shutdownNow();
+        }
+    }
+
+    /**
+     * Probes every uninitialized cluster at once, then initializes those that answered. Probing
+     * one after another would make a group whose clusters are black-holed — each probe waiting out
+     * its timeout — delay a cluster of another group that is already reachable.
+     */
     @Scheduled(fixedDelayString = "${kafka-dr.late-initializer.timeout-ms:5000}")
     public void checkAndInitializeClusters() {
-        for (String cluster : properties.getClusters().keySet()) {
-            if (startupState.isInitialized(cluster)) {
+        Map<ClusterTopology.ClusterRef, CompletableFuture<Boolean>> reachability = new LinkedHashMap<>();
+        for (ClusterTopology.ClusterRef ref : topology.clusters()) {
+            if (!startupState.isInitialized(ref.id())) {
+                reachability.put(ref, CompletableFuture.supplyAsync(
+                        () -> KafkaAdminHelper.probeCluster(ref.id(), properties), probes));
+            }
+        }
+
+        for (Map.Entry<ClusterTopology.ClusterRef, CompletableFuture<Boolean>> probe : reachability.entrySet()) {
+            ClusterTopology.ClusterRef ref = probe.getKey();
+            String cluster = ref.id();
+            if (!reachable(cluster, probe.getValue())) {
                 continue;
             }
 
-            if (!KafkaAdminHelper.probeCluster(cluster, properties)) {
-                continue;
-            }
-
-            String brokers = properties.getClusters().get(cluster).getBootstrapServers();
             try {
-                if (properties.isAutoCreateTopics()) {
-                    KafkaAdminHelper.provisionTopics(cluster, brokers, properties);
+                if (topology.groupOfCluster(cluster).autoCreateTopics()) {
+                    KafkaAdminHelper.provisionTopics(cluster, ref.bootstrapServers(), properties, topology);
                 }
-                initializeCluster(cluster);
+                initializeCluster(ref);
                 startupState.addInitializedCluster(cluster);
                 log.info("DR_EVENT [{}] Late-initialized — bindings created", cluster);
 
                 // If this cluster is already active (switch happened before bindings existed), start consumers now
-                if (cluster.equals(clusterManager.getActiveCluster())) {
+                if (cluster.equals(clusterManager.getActiveCluster(ref.group()))) {
                     startBindings(cluster);
                     log.info("[{}] Started late bindings (already-active)", cluster);
                 }
@@ -109,22 +191,23 @@ public class LateBindingInitializer {
     }
 
     @SuppressWarnings("unchecked")
-    private void initializeCluster(String cluster) {
+    private void initializeCluster(ClusterTopology.ClusterRef ref) {
+        String cluster = ref.id();
         log.info("[{}] Late-initializing...", cluster);
 
         Binder<MessageChannel, ? extends ConsumerProperties, ?> binder =
                 (Binder<MessageChannel, ? extends ConsumerProperties, ?>)
                         binderFactory.getBinder(cluster, MessageChannel.class);
 
-        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers().values()) {
+        // Only the consumers of this cluster's group: the others read from another Kafka.
+        for (KafkaClusterProperties.ConsumerConfig consumer : topology.groupOfCluster(cluster).consumers()) {
             String consumerName = consumer.getName();
             String topic = consumer.getTopic();
-            String functionName = KafkaClusterProperties.functionName(consumerName, cluster);
-            String bindingName = functionName + "-in-0";
+            String functionName = ref.functionName(consumerName);
+            String bindingName = ref.bindingName(consumerName);
 
-            Consumer<Message<?>> handler = functionBeans.get(functionName);
+            Consumer<Message<?>> handler = functionBean(cluster, consumerName, functionName);
             if (handler == null) {
-                log.warn("[{}][{}] No function bean found, skipping", cluster, consumerName);
                 continue;
             }
 
@@ -156,6 +239,9 @@ public class LateBindingInitializer {
 
             // Lifecycle stays with the starter regardless of what was configured.
             extendedProps.setAutoStartup(false);
+            // copyProperties cannot carry it (there is no setter), and the container customizer
+            // matches a container to its consumer — and cluster group — by binding name.
+            extendedProps.populateBindingName(bindingName);
 
             // Bind
             var binding = ((Binder<MessageChannel, ExtendedConsumerProperties<KafkaConsumerProperties>, ?>) binder)
@@ -189,8 +275,12 @@ public class LateBindingInitializer {
      * Called by BindingLifecycleManager when switching to this cluster.
      */
     public void startBindings(String cluster) {
-        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers().values()) {
-            String bindingName = KafkaClusterProperties.bindingName(consumer.getName(), cluster);
+        ClusterTopology.ClusterRef ref = topology.findCluster(cluster);
+        if (ref == null) {
+            return;
+        }
+        for (KafkaClusterProperties.ConsumerConfig consumer : topology.groupOfCluster(cluster).consumers()) {
+            String bindingName = ref.bindingName(consumer.getName());
             var binding = lateBindings.get(bindingName);
             if (binding != null) {
                 binding.start();
@@ -200,11 +290,43 @@ public class LateBindingInitializer {
     }
 
     /**
+     * Pauses one late binding.
+     *
+     * @return false when the binding does not exist yet, so there was nothing to pause
+     */
+    public boolean pauseBinding(String bindingName) {
+        Binding<?> binding = lateBindings.get(bindingName);
+        if (binding == null) {
+            return false;
+        }
+        binding.pause();
+        return true;
+    }
+
+    /**
+     * Resumes a late binding paused by {@link #pauseBinding}.
+     *
+     * @return false when the binding does not exist yet
+     */
+    public boolean resumeBinding(String bindingName) {
+        Binding<?> binding = lateBindings.get(bindingName);
+        if (binding == null) {
+            return false;
+        }
+        binding.resume();
+        return true;
+    }
+
+    /**
      * Stop consumer bindings for a late-initialized cluster.
      */
     public void stopBindings(String cluster) {
-        for (KafkaClusterProperties.ConsumerConfig consumer : properties.getConsumers().values()) {
-            String bindingName = KafkaClusterProperties.bindingName(consumer.getName(), cluster);
+        ClusterTopology.ClusterRef ref = topology.findCluster(cluster);
+        if (ref == null) {
+            return;
+        }
+        for (KafkaClusterProperties.ConsumerConfig consumer : topology.groupOfCluster(cluster).consumers()) {
+            String bindingName = ref.bindingName(consumer.getName());
             var binding = lateBindings.get(bindingName);
             if (binding != null) {
                 binding.stop();

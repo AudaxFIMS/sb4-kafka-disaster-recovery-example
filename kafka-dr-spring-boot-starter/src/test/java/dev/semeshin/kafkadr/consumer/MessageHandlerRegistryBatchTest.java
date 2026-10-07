@@ -280,6 +280,25 @@ class MessageHandlerRegistryBatchTest {
     }
 
     @Test
+    void listOfPayloadHandlerWithManualAcknowledgmentIsRejected() {
+        ConsumerConfig config = consumer("c", "listOfPayload", standard());
+        config.setProperties(Map.of("ack-mode", "MANUAL"));
+
+        // Payloads only: no Acknowledgment to call, so offsets would never be committed.
+        assertThatThrownBy(() -> registry(config))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Message<List<T>>");
+
+        ConsumerConfig immediate = consumer("c", "listOfPayload", standard());
+        immediate.setProperties(Map.of("ack-mode", "MANUAL_IMMEDIATE"));
+        assertThatThrownBy(() -> registry(immediate)).isInstanceOf(IllegalStateException.class);
+
+        ConsumerConfig envelope = consumer("c", "messageOfList", standard());
+        envelope.setProperties(Map.of("ack-mode", "MANUAL"));
+        registry(envelope);
+    }
+
+    @Test
     void consumerWithoutHandlerFallsBackToLoggingTheBatch() {
         ConsumerConfig config = consumer("c", null, split());
         MessageHandlerRegistry registry = registry(new Handlers(), config);

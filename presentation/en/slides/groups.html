@@ -1,0 +1,30 @@
+<section id="groups" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Cluster groups</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">Several independent Kafkas in one application</h2>
+</div>
+<div style="display:flex;gap:48px">
+<div style="width:760px;display:flex;flex-direction:column;background:#17263D;border:1px solid #2A3B57;border-radius:16px;padding:36px 40px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;line-height:1.5;color:#D6DEEA">kafka-dr:<br>&#160;&#160;cluster-groups:<br>&#160;&#160;&#160;&#160;<span style="color:#F0954F">core</span>:<br>&#160;&#160;&#160;&#160;&#160;&#160;clusters: { a: …, b: … }<br>&#160;&#160;&#160;&#160;<span style="color:#F0954F">analytics</span>:<br>&#160;&#160;&#160;&#160;&#160;&#160;clusters: { a: …, b: … }<br>&#160;&#160;consumers:<br>&#160;&#160;&#160;&#160;orders-bridge:<br>&#160;&#160;&#160;&#160;&#160;&#160;cluster-group: core<br>&#160;&#160;&#160;&#160;&#160;&#160;depends-on: analytics</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Each group lives on its own</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Election, failover, failback-after, health check and environment — separately for core and analytics</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Producers by name</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">producer.to("order-analytics").send(…).orThrow() — the name hides which Kafka holds the topic</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">The old form still works</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">kafka-dr.clusters is the group default, with the same binder names and keys as before</p>
+</div>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">8</p>
+</div>
+<aside>A group is one logical Kafka with its own primary and standby clusters. An application can have several, and each fails over independently: analytics going down does not touch core. A physical cluster belongs to exactly one group, checked at startup. Producers are addressed by logical name, so moving a topic to another group is a configuration change only. Existing configurations without groups keep working unchanged.</aside>
+</section>

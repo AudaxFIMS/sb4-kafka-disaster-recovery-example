@@ -1,0 +1,28 @@
+<section id="no-loss" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Целостность данных</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Без пропусков и без дублей после перехода</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<x-icon name="Search" style="width:48px;height:48px;color:#2F6FB3"></x-icon>
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Seek по времени</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">На новом кластере чтение начинается с отметки времени последней обработанной записи — у каждого консьюмера своей.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<x-icon name="Key" style="width:48px;height:48px;color:#2F6FB3"></x-icon>
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Идемпотентность</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Записи на границе перехода отсекаются по ключу в IdempotencyStore: in-memory или своё хранилище, например Redis.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<x-icon name="Lock" style="width:48px;height:48px;color:#2F6FB3"></x-icon>
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Отметка после коммита</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Отметка двигается только после коммита offset'а. С ack.owner: starter стартер коммитит сам — обработчику не нужен код подтверждения.</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">6</p>
+</div>
+<aside>Три механизма работают вместе. Seek по времени убирает пропуски: offset'ы на кластерах разные, а время записи MirrorMaker сохраняет. Seek приблизителен — на границе возможны повторы, их отсекает идемпотентность по ключу сообщения. Третье — отметка времени двигается только после реального коммита: иначе после failover можно перепрыгнуть записи, которые так и не были подтверждены.</aside>
+</section>

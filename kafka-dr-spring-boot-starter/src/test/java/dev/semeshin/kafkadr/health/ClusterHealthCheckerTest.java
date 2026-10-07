@@ -28,10 +28,15 @@ import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -74,6 +79,67 @@ class ClusterHealthCheckerTest {
                 .containsEntry("activeCluster", "primary")
                 .containsEntry("cluster.primary", "UP")
                 .containsEntry("cluster.secondary", "DOWN");
+    }
+
+    @Test
+    void reachabilityProbesThatClusterOnlyAndReportsNothing() {
+        ClusterConfig secondary = new ClusterConfig();
+        secondary.setBootstrapServers("kafka-secondary:9092");
+        secondary.setPriority(2);
+        props.getClusters().put("secondary", secondary);
+        props.getHealthCheck().setTimeoutMs(1234);
+        DescribeClusterResult cluster = mock(DescribeClusterResult.class);
+        when(adminClient.describeCluster()).thenReturn(cluster);
+        when(cluster.clusterId()).thenReturn(KafkaFuture.completedFuture("cid"));
+        ClusterHealthChecker checker = new ClusterHealthChecker(props, mgr, factory);
+
+        assertThat(checker.isReachable("secondary")).isTrue();
+
+        verify(factory).create(eq("kafka-secondary:9092"), eq(1234), any());
+        verify(factory, never()).create(eq("kafka-primary:9092"), anyInt(), any());
+        // A producer's question, not a health round: the manager hears nothing of it.
+        verify(mgr, never()).reportHealth(anyString(), anyBoolean());
+    }
+
+    @Test
+    void reachabilityIsFalseForAClusterThatDoesNotAnswerOrIsUnknown() {
+        DescribeClusterResult cluster = mock(DescribeClusterResult.class);
+        when(adminClient.describeCluster()).thenReturn(cluster);
+        KafkaFuture<String> failed = KafkaFuture.completedFuture(null).thenApply(v -> {
+            throw new org.apache.kafka.common.errors.TimeoutException("no answer");
+        });
+        when(cluster.clusterId()).thenReturn(failed);
+        ClusterHealthChecker checker = new ClusterHealthChecker(props, mgr, factory);
+
+        assertThat(checker.isReachable("primary")).isFalse();
+        assertThat(checker.isReachable("no-such-cluster")).isFalse();
+        verify(factory, times(1)).create(anyString(), anyInt(), any());
+    }
+
+    @Test
+    void topicLookupTellsAMissingTopicFromAClusterThatDoesNotAnswer() {
+        org.apache.kafka.clients.admin.DescribeTopicsResult topics = mock(org.apache.kafka.clients.admin.DescribeTopicsResult.class);
+        when(adminClient.describeTopics(any(java.util.Collection.class))).thenReturn(topics);
+        ClusterHealthChecker checker = new ClusterHealthChecker(props, mgr, factory);
+
+        when(topics.allTopicNames()).thenReturn(failedFuture(
+                new org.apache.kafka.common.errors.UnknownTopicOrPartitionException("no such topic")));
+        assertThat(checker.lacksTopic("primary", "orders")).isTrue();
+
+        when(topics.allTopicNames()).thenReturn(KafkaFuture.completedFuture(Map.of()));
+        assertThat(checker.lacksTopic("primary", "orders")).isFalse();
+
+        // Not answering is not "the topic is missing".
+        when(topics.allTopicNames()).thenReturn(failedFuture(
+                new org.apache.kafka.common.errors.TimeoutException("no answer")));
+        assertThat(checker.lacksTopic("primary", "orders")).isFalse();
+        assertThat(checker.lacksTopic("no-such-cluster", "orders")).isFalse();
+    }
+
+    private static <T> KafkaFuture<T> failedFuture(RuntimeException cause) {
+        org.apache.kafka.common.internals.KafkaFutureImpl<T> future = new org.apache.kafka.common.internals.KafkaFutureImpl<>();
+        future.completeExceptionally(cause);
+        return future;
     }
 
     @Test
@@ -218,6 +284,180 @@ class ClusterHealthCheckerTest {
         ArgumentCaptor<Map<String, String>> captor = ArgumentCaptor.forClass(Map.class);
         verify(factory).create(eq("kafka-primary:9092"), anyInt(), captor.capture());
         assertThat(captor.getValue()).containsEntry("security.protocol", "SSL");
+    }
+
+    @Test
+    void eachGroupIsProbedWithItsOwnSettingsAndTopics() {
+        props.setClusters(new LinkedHashMap<>());
+        props.getHealthCheck().setTimeoutMs(2000);
+        props.getHealthCheck().setDeepProbe(true);
+        props.getHealthCheck().setDeepProbeMinNodes(1);
+
+        KafkaClusterProperties.ClusterGroupConfig core = new KafkaClusterProperties.ClusterGroupConfig();
+        core.setClusters(Map.of("primary", clusterCfg("core-a:9092")));
+        KafkaClusterProperties.ClusterGroupConfig analytics = new KafkaClusterProperties.ClusterGroupConfig();
+        analytics.setClusters(Map.of("dc1", clusterCfg("an-a:9092")));
+        analytics.getHealthCheck().setTimeoutMs(750L);
+        analytics.getHealthCheck().setDeepProbe(false);
+        Map<String, KafkaClusterProperties.ClusterGroupConfig> groups = new LinkedHashMap<>();
+        groups.put("core", core);
+        groups.put("analytics", analytics);
+        props.setClusterGroups(groups);
+
+        KafkaClusterProperties.ConsumerConfig orders = new KafkaClusterProperties.ConsumerConfig();
+        orders.setTopic("orders");
+        orders.setClusterGroup("core");
+        KafkaClusterProperties.ConsumerConfig scores = new KafkaClusterProperties.ConsumerConfig();
+        scores.setTopic("scores");
+        scores.setClusterGroup("analytics");
+        props.setConsumers(Map.of("orders", orders, "scores", scores));
+
+        stubDescribeCluster("cid");
+        stubListTopics(Set.of("orders", "scores"));
+        stubDescribeTopic("orders", partitionWithLeaderAndIsr(0, 1, List.of(1)));
+
+        new ClusterHealthChecker(props, mgr, factory).checkAllClusters();
+
+        verify(factory).create(eq("core-a:9092"), eq(2000), any());
+        verify(factory).create(eq("an-a:9092"), eq(750), any());
+        // Deep probe only for core, and only over core's topics: scores lives in another Kafka.
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Collection<String>> topics = ArgumentCaptor.forClass(Collection.class);
+        verify(adminClient).describeTopics(topics.capture());
+        assertThat(topics.getValue()).containsExactly("orders");
+        verify(mgr).reportHealth("core-primary", true);
+        verify(mgr).reportHealth("analytics-dc1", true);
+    }
+
+    @Test
+    void healthIsReportedPerGroupWhenSeveralAreConfigured() {
+        props.setClusters(new LinkedHashMap<>());
+        props.setClusterGroups(twoGroups(5000L, 5000L));
+        when(mgr.getActiveCluster("core")).thenReturn("core-secondary");
+        when(mgr.getActiveCluster("analytics")).thenReturn("analytics-dc1");
+        when(mgr.getHealthStatuses("core")).thenReturn(Map.of("core-primary", false));
+        when(mgr.getHealthStatuses("analytics")).thenReturn(Map.of("analytics-dc1", true));
+
+        Health health = new ClusterHealthChecker(props, mgr, factory).health();
+
+        assertThat(health.getDetails())
+                .containsEntry("group.core.activeCluster", "core-secondary")
+                .containsEntry("group.core.cluster.primary", "DOWN")
+                .containsEntry("group.analytics.activeCluster", "analytics-dc1")
+                .containsEntry("group.analytics.cluster.dc1", "UP")
+                .doesNotContainKey("activeCluster");
+    }
+
+    @Test
+    void eachGroupIsScheduledAtItsOwnIntervalUntilStopped() throws Exception {
+        props.setClusters(new LinkedHashMap<>());
+        props.setClusterGroups(twoGroups(50L, 60_000L));
+        stubDescribeCluster("cid");
+
+        ClusterHealthChecker checker = new ClusterHealthChecker(props, mgr, factory);
+        checker.start();
+        try {
+            assertThat(checker.isRunning()).isTrue();
+            Thread.sleep(600);
+        } finally {
+            checker.stop();
+        }
+        assertThat(checker.isRunning()).isFalse();
+
+        // The first round of every group runs at once; only core comes back every 50 ms.
+        verify(mgr, atLeast(4)).reportHealth("core-primary", true);
+        verify(mgr, times(1)).reportHealth("analytics-dc1", true);
+
+        clearInvocations(mgr);
+        Thread.sleep(200);
+        verify(mgr, never()).reportHealth(anyString(), anyBoolean());
+        checker.shutdown();
+    }
+
+    @Test
+    void roundInterruptedByStopReportsNothing() throws Exception {
+        props.getHealthCheck().setTimeoutMs(5000);
+        DescribeClusterResult slow = mock(DescribeClusterResult.class);
+        when(adminClient.describeCluster()).thenReturn(slow);
+        when(slow.clusterId()).thenReturn(new KafkaFutureImpl<>());   // never completes
+        java.util.concurrent.CountDownLatch probing = new java.util.concurrent.CountDownLatch(1);
+        when(factory.create(anyString(), anyInt(), any())).thenAnswer(inv -> {
+            probing.countDown();
+            return adminClient;
+        });
+
+        ClusterHealthChecker checker = new ClusterHealthChecker(props, mgr, factory);
+        checker.start();
+        assertThat(probing.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        checker.stop();
+        Thread.sleep(300);
+        checker.shutdown();
+
+        // An interrupted wait is no verdict on the cluster; reporting it as a failure would fail
+        // the group over — and persist that failover — on the way down.
+        verify(mgr, never()).reportHealth(anyString(), anyBoolean());
+    }
+
+    @Test
+    void eachGroupIsProbedFromItsOwnPool() {
+        props.setClusters(new LinkedHashMap<>());
+        props.setClusterGroups(twoGroups(5000L, 5000L));
+        stubDescribeCluster("cid");
+        Map<String, String> threadByBrokers = new java.util.concurrent.ConcurrentHashMap<>();
+        when(factory.create(anyString(), anyInt(), any())).thenAnswer(inv -> {
+            threadByBrokers.put(inv.getArgument(0), Thread.currentThread().getName());
+            return adminClient;
+        });
+
+        ClusterHealthChecker checker = new ClusterHealthChecker(props, mgr, factory);
+        checker.checkAllClusters();
+        checker.shutdown();
+
+        // Hanging probes of one group can then only ever queue behind each other.
+        assertThat(threadByBrokers.get("core-a:9092")).startsWith("kafka-dr-health-probe-core-");
+        assertThat(threadByBrokers.get("an-a:9092")).startsWith("kafka-dr-health-probe-analytics-");
+    }
+
+    @Test
+    void clustersAreReportedInPriorityOrderNotDeclarationOrder() {
+        ClusterConfig standby = new ClusterConfig();
+        standby.setBootstrapServers("kafka-standby:9092");
+        standby.setPriority(2);
+        ClusterConfig main = new ClusterConfig();
+        main.setBootstrapServers("kafka-main:9092");
+        main.setPriority(1);
+        Map<String, ClusterConfig> clusters = new LinkedHashMap<>();
+        clusters.put("standby", standby);   // declared first
+        clusters.put("main", main);
+        props.setClusters(clusters);
+        stubDescribeCluster("cid");
+
+        new ClusterHealthChecker(props, mgr, factory).checkAllClusters();
+
+        // The initial election takes the first healthy report: it has to be the best cluster.
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(mgr);
+        order.verify(mgr).reportHealth("main", true);
+        order.verify(mgr).reportHealth("standby", true);
+    }
+
+    private static Map<String, KafkaClusterProperties.ClusterGroupConfig> twoGroups(long coreInterval,
+                                                                                   long analyticsInterval) {
+        KafkaClusterProperties.ClusterGroupConfig core = new KafkaClusterProperties.ClusterGroupConfig();
+        core.setClusters(Map.of("primary", clusterCfg("core-a:9092")));
+        core.getHealthCheck().setIntervalMs(coreInterval);
+        KafkaClusterProperties.ClusterGroupConfig analytics = new KafkaClusterProperties.ClusterGroupConfig();
+        analytics.setClusters(Map.of("dc1", clusterCfg("an-a:9092")));
+        analytics.getHealthCheck().setIntervalMs(analyticsInterval);
+        Map<String, KafkaClusterProperties.ClusterGroupConfig> groups = new LinkedHashMap<>();
+        groups.put("core", core);
+        groups.put("analytics", analytics);
+        return groups;
+    }
+
+    private static ClusterConfig clusterCfg(String brokers) {
+        ClusterConfig cfg = new ClusterConfig();
+        cfg.setBootstrapServers(brokers);
+        return cfg;
     }
 
     private void addConsumer(String topic) {

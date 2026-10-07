@@ -102,4 +102,33 @@ class RedisFailoverStateStoreTest {
 
         assertThat(store.load()).isEmpty();
     }
+
+    @Test
+    void eachClusterGroupIsStoredUnderItsOwnKey() {
+        Map<String, String> core = new HashMap<>();
+        doAnswer(inv -> {
+            Map<String, String> source = inv.getArgument(1);
+            core.putAll(source);
+            return null;
+        }).when(hashOps).putAll(eq(KEY + ":core"), any());
+        when(hashOps.entries(eq(KEY + ":core"))).thenAnswer(inv -> new HashMap<>(core));
+        Instant at = Instant.parse("2026-10-06T10:00:00Z");
+
+        store.save("core", new FailoverStateStore.FailoverState("core-secondary", at));
+
+        assertThat(store.load("core")).contains(new FailoverStateStore.FailoverState("core-secondary", at));
+        // The default group keeps the original key and is not touched by another group's failover.
+        assertThat(backing).isEmpty();
+        assertThat(store.load()).isEmpty();
+
+        store.clear("core");
+        verify(redis).delete(KEY + ":core");
+        verify(redis, never()).delete(KEY);
+    }
+
+    @Test
+    void storeDeclaresThatItKeepsGroupsApart() {
+        // ActiveClusterManager refuses a store that does not, once several groups are configured.
+        assertThat(store.supportsGroups()).isTrue();
+    }
 }

@@ -1,0 +1,26 @@
+<section id="verified" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Проверено</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">Тесты и живые прогоны на реальных кластерах</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-size:120px;font-weight:700;line-height:1;color:#F5F3EE">620</p>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6">тестов, 0 падений: 586 в стартере, 34 в примерах</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-size:120px;font-weight:700;line-height:1;color:#F5F3EE">94%</p>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6">покрытие инструкций стартера, 87% веток</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-size:120px;font-weight:700;line-height:1;color:#F5F3EE">7</p>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6">примеров, каждый прогнан вживую на своём docker-стенде</p>
+</div>
+</div>
+<p style="font-size:28px;line-height:1.5;color:#D6DEEA">Сценарии: failover и failback · потеря 1 из 3 брокеров без failover · падение группы-зависимости · max-hold · топик, созданный после старта · восстановление состояния из Redis после рестарта</p>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">11</p>
+</div>
+<aside>Кроме модульных тестов — мутационная проверка: в копию кода намеренно вносились ошибки, и тесты должны были их поймать. Тесты на многопоточность прогонялись многократно. Но главное — живые прогоны: несколько серьёзных проблем нашли только они, а не статическое ревью. Например, что запись на резервный кластер остаётся непрочитанной, и что binding, созданный после старта, нельзя было остановить.</aside>
+</section>

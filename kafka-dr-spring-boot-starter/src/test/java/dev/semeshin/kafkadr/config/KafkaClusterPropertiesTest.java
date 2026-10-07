@@ -123,6 +123,76 @@ class KafkaClusterPropertiesTest {
     }
 
     @Test
+    void groupedFunctionNameCamelCasesConsumerGroupAndCluster() {
+        assertThat(KafkaClusterProperties.functionName("order-events", "core", "primary"))
+                .isEqualTo("orderEventsCorePrimary");
+        assertThat(KafkaClusterProperties.functionName("order-events", "eu-analytics", "dc-1"))
+                .isEqualTo("orderEventsEuAnalyticsDc1");
+        assertThat(KafkaClusterProperties.bindingName("orders", "core", "primary"))
+                .isEqualTo("ordersCorePrimary-in-0");
+    }
+
+    @Test
+    void defaultGroupKeepsTheHistoricalNames() {
+        assertThat(KafkaClusterProperties.functionName("payment-events", "default", "us-east"))
+                .isEqualTo(KafkaClusterProperties.functionName("payment-events", "us-east"))
+                .isEqualTo("paymentEventsUs-east");
+        assertThat(KafkaClusterProperties.clusterId("default", "primary")).isEqualTo("primary");
+        assertThat(KafkaClusterProperties.clusterId("core", "primary")).isEqualTo("core-primary");
+    }
+
+    @Test
+    void effectiveEnvironmentLayersGlobalGroupAndCluster() {
+        KafkaClusterProperties props = new KafkaClusterProperties();
+        props.setDefaultEnvironment(nested("a", "global", "b", "global", "c", "global"));
+        KafkaClusterProperties.ClusterGroupConfig core = new KafkaClusterProperties.ClusterGroupConfig();
+        core.setDefaultEnvironment(nested("b", "group", "c", "group"));
+        ClusterConfig primary = new ClusterConfig();
+        primary.setBootstrapServers("core-a:9092");
+        primary.setEnvironment(nested("c", "cluster"));
+        ClusterConfig secondary = new ClusterConfig();
+        secondary.setBootstrapServers("core-b:9092");
+        core.setClusters(new LinkedHashMap<>(Map.of("primary", primary, "secondary", secondary)));
+        props.setClusterGroups(new LinkedHashMap<>(Map.of("core", core)));
+
+        // Nearest level wins, key by key.
+        assertThat(props.getEffectiveEnvironment("core-primary"))
+                .containsEntry("a", "global").containsEntry("b", "group").containsEntry("c", "cluster");
+        assertThat(props.getEffectiveEnvironment("core-secondary"))
+                .containsEntry("a", "global").containsEntry("b", "group").containsEntry("c", "group");
+        // The group environment belongs to the group's clusters only.
+        assertThat(props.getEffectiveEnvironment("primary")).containsEntry("b", "global");
+    }
+
+    @Test
+    void findClusterResolvesBinderIdsOfBothForms() {
+        KafkaClusterProperties legacy = new KafkaClusterProperties();
+        ClusterConfig a = new ClusterConfig();
+        legacy.setClusters(Map.of("primary", a));
+        assertThat(legacy.findCluster("primary")).isSameAs(a);
+        assertThat(legacy.findCluster("default-primary")).isNull();
+
+        KafkaClusterProperties grouped = new KafkaClusterProperties();
+        ClusterConfig b = new ClusterConfig();
+        KafkaClusterProperties.ClusterGroupConfig core = new KafkaClusterProperties.ClusterGroupConfig();
+        core.setClusters(Map.of("primary", b));
+        grouped.setClusterGroups(Map.of("core", core));
+        assertThat(grouped.findCluster("core-primary")).isSameAs(b);
+        assertThat(grouped.findCluster("primary")).isNull();
+    }
+
+    @Test
+    void lookupBeforeValidationToleratesAGroupDeclaredWithoutABody() {
+        KafkaClusterProperties props = new KafkaClusterProperties();
+        Map<String, KafkaClusterProperties.ClusterGroupConfig> groups = new LinkedHashMap<>();
+        groups.put("analytics", null);   // "kafka-dr.cluster-groups.analytics:" with nothing under it
+        props.setClusterGroups(groups);
+
+        assertThat(props.findCluster("analytics-dc1")).isNull();
+        assertThat(props.getEffectiveEnvironment("analytics-dc1")).isEmpty();
+    }
+
+    @Test
     void bindingNameAppendsInZero() {
         assertThat(KafkaClusterProperties.bindingName("demo-events", "secondary"))
                 .isEqualTo("demoEventsSecondary-in-0");

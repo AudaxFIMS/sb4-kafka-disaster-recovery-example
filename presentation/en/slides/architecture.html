@@ -1,0 +1,41 @@
+<section id="architecture" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">How it works</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Observe, decide, act</h2>
+</div>
+<div style="display:flex;align-items:center;gap:24px">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">ClusterHealthChecker</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">AdminClient probes of every cluster at a set interval</p>
+</div>
+<x-shape kind="arrow-right" style="width:64px;height:36px;background:#E07A2E"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">ActiveClusterManager</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Thresholds, election by priority, failback-after, persisted state</p>
+</div>
+<x-shape kind="arrow-right" style="width:64px;height:36px;background:#E07A2E"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:24px">
+<div style="display:flex;flex-direction:column;gap:8px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px 36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">BindingLifecycleManager</p>
+<p style="font-size:26px;line-height:1.35;color:#4A5568">Stops and starts the consumers</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px 36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">ResilientProducer</p>
+<p style="font-size:26px;line-height:1.35;color:#4A5568">Writes to the active cluster</p>
+</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:24px;background:#0F1B2D;border-radius:16px;padding:32px 40px">
+<p style="font-size:30px;font-weight:600;color:#F5F3EE">Primary</p>
+<x-shape kind="arrow-right" style="width:72px;height:36px;background:#F0954F"></x-shape>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;color:#F0954F">MirrorMaker 2</p>
+<x-shape kind="arrow-right" style="width:72px;height:36px;background:#F0954F"></x-shape>
+<p style="font-size:30px;font-weight:600;color:#F5F3EE">Standby</p>
+<p style="font-size:26px;color:#B8C4D6">— replication outside the starter, same topic names</p>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">4</p>
+</div>
+<aside>Three roles. The health checker observes: every interval (5 s by default) it asks each cluster through an AdminClient. The manager decides: it counts consecutive failures and successes, elects the active cluster by priority, honours the failback-after window and persists its state. The executors act: consumer bindings are stopped on the old cluster and started on the new one, and the producer always writes to the active cluster. Replication is MirrorMaker 2 with IdentityReplicationPolicy, so topic names match.</aside>
+</section>

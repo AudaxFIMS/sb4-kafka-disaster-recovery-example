@@ -1,10 +1,12 @@
 package dev.semeshin.kafkadr.config;
 
+import dev.semeshin.kafkadr.consumer.DependencyGate;
 import dev.semeshin.kafkadr.consumer.IdempotentConsumer;
 import dev.semeshin.kafkadr.consumer.LastProcessedTimestampTracker;
 import dev.semeshin.kafkadr.consumer.MessageHandlerRegistry;
 import dev.semeshin.kafkadr.idempotency.IdempotencyStore;
 import dev.semeshin.kafkadr.idempotency.InMemoryIdempotencyStore;
+import dev.semeshin.kafkadr.routing.DependencyGuard;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +31,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -225,13 +228,16 @@ class DynamicBindingRegistrarTest {
         props.put("kafka-dr.auto-create-topics", "true");
         loadProperties(props);
         allClustersReachable();
-        staticHelper.when(() -> KafkaAdminHelper.provisionTopics(anyString(), anyString(), any()))
+        staticHelper.when(() -> KafkaAdminHelper.provisionTopics(anyString(), anyString(),
+                        any(KafkaClusterProperties.class), any(ClusterTopology.class)))
                 .thenAnswer(inv -> null);
 
         registrar().postProcessBeanDefinitionRegistry(registry);
 
-        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eq("primary"), eq("kafka-primary:9092"), any()));
-        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eq("secondary"), eq("kafka-secondary:9092"), any()));
+        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eq("primary"), eq("kafka-primary:9092"),
+                any(KafkaClusterProperties.class), any(ClusterTopology.class)));
+        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eq("secondary"), eq("kafka-secondary:9092"),
+                any(KafkaClusterProperties.class), any(ClusterTopology.class)));
     }
 
     @Test
@@ -264,6 +270,35 @@ class DynamicBindingRegistrarTest {
         assertThat(environment.getProperty(
                 "spring.cloud.stream.bindings.events-out-0.producer.use-native-encoding"))
                 .isEqualTo("true");
+    }
+
+    @Test
+    void producerBindingsAreAlwaysSynchronous() {
+        Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
+        props.put("kafka-dr.producers.events.topic", "events");
+        loadProperties(props);
+        allClustersReachable();
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+
+        // Every failure the producer acts on surfaces only from a synchronous send.
+        assertThat(environment.getProperty("spring.cloud.stream.kafka.bindings.events.producer.sync"))
+                .isEqualTo("true");
+        assertThat(environment.getProperty("spring.cloud.stream.kafka.bindings.events-out-0.producer.sync"))
+                .isEqualTo("true");
+    }
+
+    @Test
+    void asynchronousProducerIsRejected() {
+        Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
+        props.put("kafka-dr.producers.events.topic", "events");
+        props.put("kafka-dr.default-producer-properties.sync", "false");
+        loadProperties(props);
+        allClustersReachable();
+
+        assertThatThrownBy(() -> registrar().postProcessBeanDefinitionRegistry(registry))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("sync=false");
     }
 
     @Test
@@ -560,6 +595,199 @@ class DynamicBindingRegistrarTest {
                 + ".environment.spring.cloud.stream.kafka.binder.auto-create-topics")).isEqualTo("true");
         assertThat(environment.getProperty("spring.cloud.stream.binders.secondary"
                 + ".environment.spring.cloud.stream.kafka.binder.auto-create-topics")).isEqualTo("false");
+    }
+
+    // --- cluster groups -------------------------------------------------------------
+
+    @Test
+    void explicitGroupQualifiesBinderBindingAndBeanNames() {
+        loadProperties(coreGroupWithConsumer());
+        allClustersReachable();
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+
+        assertThat(environment.getProperty("spring.cloud.stream.binders.core-primary.type")).isEqualTo("kafka");
+        assertThat(environment.getProperty(
+                "spring.cloud.stream.binders.core-secondary.environment.spring.cloud.stream.kafka.binder.brokers"))
+                .isEqualTo("core-b:9092");
+        assertThat(environment.getProperty("spring.cloud.stream.bindings.ordersCorePrimary-in-0.binder"))
+                .isEqualTo("core-primary");
+        assertThat(environment.getProperty("spring.cloud.stream.bindings.ordersCoreSecondary-in-0.destination"))
+                .isEqualTo("orders");
+        // Map binding from a HashMap-backed source does not preserve order.
+        assertThat(environment.getProperty("spring.cloud.function.definition").split(";"))
+                .containsExactlyInAnyOrder("ordersCorePrimary", "ordersCoreSecondary");
+        assertThat(registry.containsBeanDefinition("ordersCorePrimary")).isTrue();
+        assertThat(registry.containsBeanDefinition("ordersCoreSecondary")).isTrue();
+        assertThat(environment.getProperty("kafka-dr.internal.initialized-clusters").split(","))
+                .containsExactlyInAnyOrder("core-primary", "core-secondary");
+    }
+
+    @Test
+    void groupEnvironmentSitsBetweenGlobalAndClusterEnvironment() {
+        Map<String, String> props = new HashMap<>(coreGroupWithConsumer());
+        String key = "spring.cloud.stream.kafka.binder.configuration.schema.registry.url";
+        props.put("kafka-dr.default-environment." + key, "http://global-sr:8081");
+        props.put("kafka-dr.cluster-groups.core.default-environment." + key, "http://core-sr:8081");
+        props.put("kafka-dr.cluster-groups.core.clusters.primary.environment." + key, "http://core-a-sr:8081");
+        loadProperties(props);
+        allClustersReachable();
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+
+        assertThat(environment.getProperty("spring.cloud.stream.binders.core-primary.environment." + key))
+                .isEqualTo("http://core-a-sr:8081");
+        assertThat(environment.getProperty("spring.cloud.stream.binders.core-secondary.environment." + key))
+                .isEqualTo("http://core-sr:8081");
+    }
+
+    @Test
+    void groupAutoCreateTopicsProvisionsTheGroupClusters() {
+        Map<String, String> props = new HashMap<>(coreGroupWithConsumer());
+        props.put("kafka-dr.cluster-groups.core.auto-create-topics", "true");
+        loadProperties(props);
+        allClustersReachable();
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+
+        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eq("core-primary"), eq("core-a:9092"),
+                any(KafkaClusterProperties.class), any(ClusterTopology.class)));
+        staticHelper.verify(() -> KafkaAdminHelper.provisionTopics(eq("core-secondary"), eq("core-b:9092"),
+                any(KafkaClusterProperties.class), any(ClusterTopology.class)));
+    }
+
+    @Test
+    void severalGroupsBindEachConsumerOnlyToTheClustersOfItsGroup() {
+        Map<String, String> props = new HashMap<>(coreGroupWithConsumer());
+        props.put("kafka-dr.consumers.orders.cluster-group", "core");
+        props.put("kafka-dr.cluster-groups.analytics.clusters.dc1.bootstrap-servers", "an-a:9092");
+        props.put("kafka-dr.consumers.scores.topic", "scores");
+        props.put("kafka-dr.consumers.scores.handler", "processScore");
+        props.put("kafka-dr.consumers.scores.cluster-group", "analytics");
+        loadProperties(props);
+        allClustersReachable();
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+
+        assertThat(environment.getProperty("spring.cloud.stream.binders.analytics-dc1.type")).isEqualTo("kafka");
+        assertThat(environment.getProperty("spring.cloud.stream.bindings.scoresAnalyticsDc1-in-0.binder"))
+                .isEqualTo("analytics-dc1");
+        // Each consumer is bound in its own Kafka only.
+        assertThat(environment.getProperty("spring.cloud.stream.bindings.ordersAnalyticsDc1-in-0.destination")).isNull();
+        assertThat(environment.getProperty("spring.cloud.stream.bindings.scoresCorePrimary-in-0.destination")).isNull();
+        assertThat(environment.getProperty("spring.cloud.function.definition").split(";"))
+                .containsExactlyInAnyOrder("ordersCorePrimary", "ordersCoreSecondary", "scoresAnalyticsDc1");
+        assertThat(registry.containsBeanDefinition("scoresAnalyticsDc1")).isTrue();
+        assertThat(registry.containsBeanDefinition("scoresCorePrimary")).isFalse();
+    }
+
+    @Test
+    void severalGroupsStillReportConfigurationErrorsFirst() {
+        Map<String, String> props = new HashMap<>(coreGroupWithConsumer());
+        props.put("kafka-dr.cluster-groups.analytics.clusters.dc1.bootstrap-servers", "an-a:9092");
+        loadProperties(props);
+
+        // The consumer has no cluster-group: that is the error to fix, not the group count.
+        assertThatThrownBy(() -> registrar().postProcessBeanDefinitionRegistry(registry))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("kafka-dr.consumers.orders has no cluster-group");
+    }
+
+    @Test
+    void sharedBrokersAreRejectedBeforeAnyProbe() {
+        Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
+        props.put("kafka-dr.clusters.secondary.bootstrap-servers", "kafka-primary:9092");
+        loadProperties(props);
+
+        assertThatThrownBy(() -> registrar().postProcessBeanDefinitionRegistry(registry))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Broker 'kafka-primary:9092'");
+        staticHelper.verifyNoInteractions();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void consumerWithDependsOnIsBuiltWithTheGuardsGate() {
+        Map<String, String> props = new HashMap<>(coreGroupWithConsumer());
+        props.put("kafka-dr.consumers.orders.cluster-group", "core");
+        props.put("kafka-dr.consumers.orders.depends-on", "analytics");
+        props.put("kafka-dr.consumers.orders.properties.ack-mode", "MANUAL");
+        props.put("kafka-dr.cluster-groups.analytics.clusters.dc1.bootstrap-servers", "an-a:9092");
+        loadProperties(props);
+        allClustersReachable();
+        registerConsumerCollaborators();
+        DependencyGuard guard = mock(DependencyGuard.class);
+        when(guard.gateFor("orders")).thenReturn(DependencyGate.NONE);
+        registry.registerSingleton("dependencyGuard", guard);
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+        registry.getBean("ordersCorePrimary", Consumer.class);
+
+        verify(guard).gateFor("orders");
+    }
+
+    @Test
+    void dependsOnWithoutManualAckModeStopsTheStartup() {
+        Map<String, String> props = new HashMap<>(coreGroupWithConsumer());
+        props.put("kafka-dr.consumers.orders.cluster-group", "core");
+        props.put("kafka-dr.consumers.orders.depends-on", "analytics");
+        props.put("kafka-dr.cluster-groups.analytics.clusters.dc1.bootstrap-servers", "an-a:9092");
+        loadProperties(props);
+
+        assertThatThrownBy(() -> registrar().postProcessBeanDefinitionRegistry(registry))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("needs ack-mode=MANUAL or MANUAL_IMMEDIATE");
+    }
+
+    @Test
+    void producerChannelCacheIsSizedForEveryProducerOnEveryClusterOfItsGroup() {
+        Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
+        for (int i = 0; i < 6; i++) {
+            props.put("kafka-dr.producers.p" + i + ".topic", "t" + i);
+        }
+        loadProperties(props);
+        allClustersReachable();
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+
+        // 6 producers × 2 clusters: the default of 10 would unbind producers still in use.
+        assertThat(environment.getProperty("spring.cloud.stream.dynamic-destination-cache-size")).isEqualTo("12");
+    }
+
+    @Test
+    void explicitProducerChannelCacheSizeIsKept() {
+        Map<String, String> props = new HashMap<>(twoClustersWithConsumer());
+        props.put("kafka-dr.producers.p.topic", "t");
+        props.put("spring.cloud.stream.dynamic-destination-cache-size", "50");
+        loadProperties(props);
+        allClustersReachable();
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+
+        assertThat(environment.getProperty("spring.cloud.stream.dynamic-destination-cache-size")).isEqualTo("50");
+    }
+
+    @Test
+    void smallConfigurationsKeepTheSpringCloudStreamDefault() {
+        loadProperties(twoClustersWithConsumer());
+        allClustersReachable();
+
+        registrar().postProcessBeanDefinitionRegistry(registry);
+
+        assertThat(environment.getProperty("spring.cloud.stream.dynamic-destination-cache-size")).isEqualTo("10");
+    }
+
+    private static Map<String, String> coreGroupWithConsumer() {
+        Map<String, String> props = new HashMap<>();
+        props.put("kafka-dr.enabled", "true");
+        props.put("kafka-dr.cluster-groups.core.clusters.primary.bootstrap-servers", "core-a:9092");
+        props.put("kafka-dr.cluster-groups.core.clusters.primary.priority", "1");
+        props.put("kafka-dr.cluster-groups.core.clusters.secondary.bootstrap-servers", "core-b:9092");
+        props.put("kafka-dr.cluster-groups.core.clusters.secondary.priority", "2");
+        props.put("kafka-dr.consumers.orders.topic", "orders");
+        props.put("kafka-dr.consumers.orders.handler", "processOrder");
+        props.put("kafka-dr.consumers.orders.group", "dr-group");
+        return props;
     }
 
     /** Beans the generated consumer function beans resolve lazily from the factory. */

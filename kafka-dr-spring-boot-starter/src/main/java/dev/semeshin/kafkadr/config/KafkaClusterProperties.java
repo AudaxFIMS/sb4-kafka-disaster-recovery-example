@@ -6,7 +6,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @ConditionalOnProperty(name = "kafka-dr.enabled", havingValue = "true")
@@ -14,7 +16,21 @@ import java.util.Map;
 @ConfigurationProperties(prefix = "kafka-dr")
 public class KafkaClusterProperties {
 
+    /**
+     * Name of the cluster group the legacy {@code kafka-dr.clusters} form resolves to. A group
+     * with this name keeps the historical naming — binder id equals the cluster name, bean and
+     * binding names carry no group segment — whether it comes from {@code clusters} or is
+     * declared explicitly under {@code cluster-groups}.
+     */
+    public static final String DEFAULT_CLUSTER_GROUP = "default";
+
     private Map<String, ClusterConfig> clusters = new LinkedHashMap<>();
+
+    /**
+     * Independent sets of interchangeable clusters, each with its own active cluster,
+     * failover and failback. Mutually exclusive with {@link #clusters}.
+     */
+    private Map<String, ClusterGroupConfig> clusterGroups = new LinkedHashMap<>();
     private Map<String, ConsumerConfig> consumers = new LinkedHashMap<>();
     private Map<String, ProducerConfig> producers = new LinkedHashMap<>();
     private Map<String, Object> defaultEnvironment = new LinkedHashMap<>();
@@ -28,6 +44,18 @@ public class KafkaClusterProperties {
 
     public Map<String, ClusterConfig> getClusters() { return clusters; }
     public void setClusters(Map<String, ClusterConfig> clusters) { this.clusters = clusters; }
+    public Map<String, ClusterGroupConfig> getClusterGroups() { return clusterGroups; }
+    public void setClusterGroups(Map<String, ClusterGroupConfig> clusterGroups) { this.clusterGroups = clusterGroups; }
+
+    /**
+     * The clusters resolved into groups. Built on every call — components that need it
+     * repeatedly resolve it once, after the properties are bound.
+     *
+     * @throws IllegalStateException when the configuration cannot be resolved into groups
+     */
+    public ClusterTopology topology() {
+        return ClusterTopology.from(this);
+    }
 
     /**
      * Returns the consumer map with each entry's {@code name} populated from its map key.
@@ -109,6 +137,105 @@ public class KafkaClusterProperties {
         public void setEnvironment(Map<String, Object> environment) { this.environment = environment; }
     }
 
+    /**
+     * One logical Kafka: a set of interchangeable clusters kept in sync by replication, with
+     * its own active cluster, failover and failback. Groups are independent of each other —
+     * losing a cluster in one never moves the consumers or producers of another.
+     *
+     * <p>Every setting here is optional and narrows the global one of the same name; a value
+     * left unset inherits it.
+     */
+    public static class ClusterGroupConfig {
+        private Map<String, ClusterConfig> clusters = new LinkedHashMap<>();
+
+        /**
+         * Binder environment shared by the group's clusters, layered between
+         * {@code kafka-dr.default-environment} and each cluster's own {@code environment}.
+         */
+        private Map<String, Object> defaultEnvironment = new LinkedHashMap<>();
+
+        private GroupHealthCheckConfig healthCheck = new GroupHealthCheckConfig();
+        private GroupFailoverConfig failover = new GroupFailoverConfig();
+
+        /** Overrides {@code kafka-dr.auto-create-topics}; null inherits it. */
+        private Boolean autoCreateTopics;
+
+        public Map<String, ClusterConfig> getClusters() { return clusters; }
+        public void setClusters(Map<String, ClusterConfig> clusters) { this.clusters = clusters; }
+        public Map<String, Object> getDefaultEnvironment() { return defaultEnvironment; }
+        public void setDefaultEnvironment(Map<String, Object> defaultEnvironment) { this.defaultEnvironment = defaultEnvironment; }
+        public GroupHealthCheckConfig getHealthCheck() { return healthCheck; }
+        public void setHealthCheck(GroupHealthCheckConfig healthCheck) { this.healthCheck = healthCheck; }
+        public GroupFailoverConfig getFailover() { return failover; }
+        public void setFailover(GroupFailoverConfig failover) { this.failover = failover; }
+        public Boolean getAutoCreateTopics() { return autoCreateTopics; }
+        public void setAutoCreateTopics(Boolean autoCreateTopics) { this.autoCreateTopics = autoCreateTopics; }
+    }
+
+    /**
+     * Group-level override of {@link HealthCheckConfig}. Each field is nullable so that "not
+     * set" can be told apart from a value and inherited from the global health-check.
+     */
+    public static class GroupHealthCheckConfig {
+        private Long intervalMs;
+        private Long timeoutMs;
+        private Integer failureThreshold;
+        private Integer recoveryThreshold;
+        private Boolean deepProbe;
+        private Integer deepProbeMinNodes;
+        private Integer deepProbeMinIsr;
+
+        /** A copy of {@code base} with every field set here layered on top. */
+        HealthCheckConfig applyTo(HealthCheckConfig base) {
+            HealthCheckConfig merged = new HealthCheckConfig();
+            merged.setIntervalMs(intervalMs != null ? intervalMs : base.getIntervalMs());
+            merged.setTimeoutMs(timeoutMs != null ? timeoutMs : base.getTimeoutMs());
+            merged.setFailureThreshold(failureThreshold != null ? failureThreshold : base.getFailureThreshold());
+            merged.setRecoveryThreshold(recoveryThreshold != null ? recoveryThreshold : base.getRecoveryThreshold());
+            merged.setDeepProbe(deepProbe != null ? deepProbe : base.isDeepProbe());
+            merged.setDeepProbeMinNodes(deepProbeMinNodes != null ? deepProbeMinNodes : base.getDeepProbeMinNodes());
+            merged.setDeepProbeMinIsr(deepProbeMinIsr != null ? deepProbeMinIsr : base.getDeepProbeMinIsr());
+            return merged;
+        }
+
+        public Long getIntervalMs() { return intervalMs; }
+        public void setIntervalMs(Long intervalMs) { this.intervalMs = intervalMs; }
+        public Long getTimeoutMs() { return timeoutMs; }
+        public void setTimeoutMs(Long timeoutMs) { this.timeoutMs = timeoutMs; }
+        public Integer getFailureThreshold() { return failureThreshold; }
+        public void setFailureThreshold(Integer failureThreshold) { this.failureThreshold = failureThreshold; }
+        public Integer getRecoveryThreshold() { return recoveryThreshold; }
+        public void setRecoveryThreshold(Integer recoveryThreshold) { this.recoveryThreshold = recoveryThreshold; }
+        public Boolean getDeepProbe() { return deepProbe; }
+        public void setDeepProbe(Boolean deepProbe) { this.deepProbe = deepProbe; }
+        public Integer getDeepProbeMinNodes() { return deepProbeMinNodes; }
+        public void setDeepProbeMinNodes(Integer deepProbeMinNodes) { this.deepProbeMinNodes = deepProbeMinNodes; }
+        public Integer getDeepProbeMinIsr() { return deepProbeMinIsr; }
+        public void setDeepProbeMinIsr(Integer deepProbeMinIsr) { this.deepProbeMinIsr = deepProbeMinIsr; }
+    }
+
+    /**
+     * Group-level override of {@link FailoverConfig}. Null inherits the global value; an empty
+     * {@code failback-after} switches a globally configured failback window off for the group.
+     */
+    public static class GroupFailoverConfig {
+        private Boolean seekByTimestamp;
+        private String failbackAfter;
+
+        /** A copy of {@code base} with every field set here layered on top. */
+        FailoverConfig applyTo(FailoverConfig base) {
+            FailoverConfig merged = new FailoverConfig();
+            merged.setSeekByTimestamp(seekByTimestamp != null ? seekByTimestamp : base.isSeekByTimestamp());
+            merged.setFailbackAfter(failbackAfter != null ? failbackAfter : base.getFailbackAfter());
+            return merged;
+        }
+
+        public Boolean getSeekByTimestamp() { return seekByTimestamp; }
+        public void setSeekByTimestamp(Boolean seekByTimestamp) { this.seekByTimestamp = seekByTimestamp; }
+        public String getFailbackAfter() { return failbackAfter; }
+        public void setFailbackAfter(String failbackAfter) { this.failbackAfter = failbackAfter; }
+    }
+
     public static class ConsumerConfig {
         /**
          * Populated from the consumer map key. Used as logical identifier for
@@ -116,7 +243,14 @@ public class KafkaClusterProperties {
          */
         private String name;
 
+        /**
+         * The cluster group the consumer reads from. May be omitted while only one group is
+         * configured, which covers every configuration using the legacy {@code clusters} form.
+         */
+        private String clusterGroup;
+
         private String topic;
+        /** Kafka consumer group id — not to be confused with {@code cluster-group}. */
         private String group = "dr-default-group";
         private String handler;
 
@@ -154,6 +288,27 @@ public class KafkaClusterProperties {
         private Boolean idempotencyEnabled;
 
         /**
+         * Cluster groups this consumer's processing depends on — typically the groups its
+         * handler produces to. While any of them has no healthy cluster, the consumer is paused
+         * and records already polled are negatively acknowledged instead of failing, so they come
+         * back once the group recovers rather than being skipped after the retries run out.
+         * Requires a manual ack-mode. Empty (default) switches the mechanism off.
+         */
+        private List<String> dependsOn = new ArrayList<>();
+
+        /** How long a record held back by {@link #dependsOn} waits before it is redelivered. */
+        private long dependsOnNackIntervalMs = 1000;
+
+        /**
+         * How long one record may be held back while every group it depends on is available —
+         * the group is up, yet the handler keeps failing to reach it (a missing ACL, a schema
+         * registry down). After that the record takes the ordinary failure path: the binder's
+         * retries, then the DLQ or a skip. Time the dependency spends down does not count: the
+         * consumer is paused then, and records wait for the group however long that takes.
+         */
+        private long dependsOnMaxHoldMs = 600_000;
+
+        /**
          * Per-consumer properties, merged on top of kafka-dr.default-consumer-properties.
          * Keys are routed by {@link BindingPropertyRouter} into either
          * spring.cloud.stream.bindings.{binding}.consumer.* (core: concurrency,
@@ -165,6 +320,8 @@ public class KafkaClusterProperties {
 
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
+        public String getClusterGroup() { return clusterGroup; }
+        public void setClusterGroup(String clusterGroup) { this.clusterGroup = clusterGroup; }
         public String getTopic() { return topic; }
         public void setTopic(String topic) { this.topic = topic; }
         public String getGroup() { return group; }
@@ -179,6 +336,12 @@ public class KafkaClusterProperties {
         public void setAck(AckConfig ack) { this.ack = ack; }
         public Boolean getIdempotencyEnabled() { return idempotencyEnabled; }
         public void setIdempotencyEnabled(Boolean idempotencyEnabled) { this.idempotencyEnabled = idempotencyEnabled; }
+        public List<String> getDependsOn() { return dependsOn; }
+        public void setDependsOn(List<String> dependsOn) { this.dependsOn = dependsOn == null ? new ArrayList<>() : dependsOn; }
+        public long getDependsOnNackIntervalMs() { return dependsOnNackIntervalMs; }
+        public void setDependsOnNackIntervalMs(long dependsOnNackIntervalMs) { this.dependsOnNackIntervalMs = dependsOnNackIntervalMs; }
+        public long getDependsOnMaxHoldMs() { return dependsOnMaxHoldMs; }
+        public void setDependsOnMaxHoldMs(long dependsOnMaxHoldMs) { this.dependsOnMaxHoldMs = dependsOnMaxHoldMs; }
         public Map<String, Object> getProperties() { return properties; }
         public void setProperties(Map<String, Object> properties) { this.properties = properties; }
     }
@@ -311,6 +474,9 @@ public class KafkaClusterProperties {
          */
         private String name;
 
+        /** The cluster group the producer writes to; same rules as for consumers. */
+        private String clusterGroup;
+
         private String topic;
 
         /**
@@ -332,6 +498,8 @@ public class KafkaClusterProperties {
 
         public String getName() { return name; }
         public void setName(String name) { this.name = name; }
+        public String getClusterGroup() { return clusterGroup; }
+        public void setClusterGroup(String clusterGroup) { this.clusterGroup = clusterGroup; }
         public String getTopic() { return topic; }
         public void setTopic(String topic) { this.topic = topic; }
         public String getContentType() { return contentType; }
@@ -502,21 +670,66 @@ public class KafkaClusterProperties {
     }
 
     /**
-     * Returns merged environment for a cluster: default-environment + per-cluster overrides.
-     * Flattened to dot-notation keys.
+     * Returns the merged environment for a cluster: {@code default-environment}, then the
+     * group's {@code default-environment}, then the cluster's own {@code environment} — the
+     * nearest level wins, key by key. Flattened to dot-notation keys.
+     *
+     * @param clusterId the cluster's binder id — its plain name in the {@code default} group,
+     *                  {@code <group>-<cluster>} elsewhere; an unknown id yields the global
+     *                  defaults only
      */
-    public Map<String, String> getEffectiveEnvironment(String clusterName) {
+    public Map<String, String> getEffectiveEnvironment(String clusterId) {
         Map<String, String> merged = new LinkedHashMap<>();
         flatten("", defaultEnvironment, merged);
-        ClusterConfig cluster = clusters.get(clusterName);
+        ClusterGroupConfig group = groupConfigOf(clusterId);
+        if (group != null) {
+            flatten("", group.getDefaultEnvironment(), merged);
+        }
+        ClusterConfig cluster = findCluster(clusterId);
         if (cluster != null) {
             flatten("", cluster.getEnvironment(), merged);
         }
         return merged;
     }
 
+    /**
+     * The cluster with the given binder id, or null. A plain lookup over both configuration
+     * forms that does not validate anything, so it is safe in places that run before — or
+     * without — the startup checks.
+     */
+    public ClusterConfig findCluster(String clusterId) {
+        ClusterConfig legacy = clusters.get(clusterId);
+        if (legacy != null) {
+            return legacy;
+        }
+        for (Map.Entry<String, ClusterGroupConfig> group : clusterGroups.entrySet()) {
+            for (Map.Entry<String, ClusterConfig> cluster : clustersOf(group.getValue()).entrySet()) {
+                if (clusterId(group.getKey(), cluster.getKey()).equals(clusterId)) {
+                    return cluster.getValue();
+                }
+            }
+        }
+        return null;
+    }
+
+    /** A group declared without a body binds as null; before validation that must not throw. */
+    private static Map<String, ClusterConfig> clustersOf(ClusterGroupConfig group) {
+        return group == null || group.getClusters() == null ? Map.of() : group.getClusters();
+    }
+
+    private ClusterGroupConfig groupConfigOf(String clusterId) {
+        for (Map.Entry<String, ClusterGroupConfig> group : clusterGroups.entrySet()) {
+            for (String cluster : clustersOf(group.getValue()).keySet()) {
+                if (clusterId(group.getKey(), cluster).equals(clusterId)) {
+                    return group.getValue();
+                }
+            }
+        }
+        return null;
+    }
+
     @SuppressWarnings("unchecked")
-    private static void flatten(String prefix, Map<String, Object> source, Map<String, String> target) {
+    static void flatten(String prefix, Map<String, Object> source, Map<String, String> target) {
         if (source == null) return;
         for (Map.Entry<String, Object> entry : source.entrySet()) {
             String key = prefix.isEmpty() ? entry.getKey() : prefix + "." + entry.getKey();
@@ -532,18 +745,47 @@ public class KafkaClusterProperties {
     // --- Naming utilities ---
 
     /**
-     * Spring Cloud Function bean name for a (consumer name, cluster) pair.
-     * Input is the logical consumer name (Map key), not the topic.
+     * Binder id of a cluster: the plain cluster name in the {@code default} group, so existing
+     * configurations keep their binder names, and {@code <group>-<cluster>} in any other —
+     * binder names are global to Spring Cloud Stream, and two groups may both have a
+     * {@code primary}.
+     */
+    public static String clusterId(String group, String cluster) {
+        return DEFAULT_CLUSTER_GROUP.equals(group) ? cluster : group + "-" + cluster;
+    }
+
+    /**
+     * Spring Cloud Function bean name for a (consumer name, cluster) pair in the
+     * {@code default} group. Input is the logical consumer name (Map key), not the topic.
      */
     public static String functionName(String consumerName, String cluster) {
         return toCamelCase(consumerName) + capitalize(cluster);
     }
 
     /**
-     * Input binding name for a (consumer name, cluster) pair.
+     * Spring Cloud Function bean name for a consumer on a cluster of the given group:
+     * {@code ordersConsumer} + {@code Core} + {@code Primary}. The {@code default} group keeps
+     * the two-part historical form, cluster name included verbatim.
+     */
+    public static String functionName(String consumerName, String group, String cluster) {
+        if (DEFAULT_CLUSTER_GROUP.equals(group)) {
+            return functionName(consumerName, cluster);
+        }
+        return toCamelCase(consumerName) + capitalize(toCamelCase(group)) + capitalize(toCamelCase(cluster));
+    }
+
+    /**
+     * Input binding name for a (consumer name, cluster) pair in the {@code default} group.
      */
     public static String bindingName(String consumerName, String cluster) {
         return functionName(consumerName, cluster) + "-in-0";
+    }
+
+    /**
+     * Input binding name for a consumer on a cluster of the given group.
+     */
+    public static String bindingName(String consumerName, String group, String cluster) {
+        return functionName(consumerName, group, cluster) + "-in-0";
     }
 
     /**

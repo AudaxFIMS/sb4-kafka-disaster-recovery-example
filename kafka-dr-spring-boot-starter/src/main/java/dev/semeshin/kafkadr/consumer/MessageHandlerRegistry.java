@@ -6,6 +6,7 @@ import dev.semeshin.kafkadr.config.KafkaClusterProperties.ConsumerConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.kafka.listener.ContainerProperties.AckMode;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.KafkaNull;
 import org.springframework.messaging.Message;
@@ -85,7 +86,7 @@ public class MessageHandlerRegistry {
             }
 
             HandlerRef ref = findHandler(processors, handlerName);
-            validate(consumer, ref);
+            validate(consumer, ref, properties.resolveAckMode(consumer));
             refs.put(consumerName, ref);
 
             log.info("Mapped consumer '{}' (topic={}) -> {}.{}({}) [shape={}, element={}, content-type={}]",
@@ -531,7 +532,7 @@ public class MessageHandlerRegistry {
 
     // --- validation -----------------------------------------------------------
 
-    private static void validate(ConsumerConfig consumer, HandlerRef ref) {
+    private static void validate(ConsumerConfig consumer, HandlerRef ref, AckMode ackMode) {
         String name = consumer.getName();
         BatchConfig batch = consumer.getBatch();
 
@@ -552,6 +553,17 @@ public class MessageHandlerRegistry {
                             + "Message<List<T>> or List<T> with mode=standard, and Message<T> or "
                             + "List<Message<T>> with mode=split.")
                             .formatted(name, batch.getMode().name().toLowerCase(), ref.shape()));
+        }
+
+        boolean manualAck = ackMode == AckMode.MANUAL || ackMode == AckMode.MANUAL_IMMEDIATE;
+        if (ref.shape() == Shape.LIST_OF_PAYLOAD && manualAck) {
+            // In standard mode the handler owns acknowledgment, and payloads carry no Acknowledgment.
+            throw new IllegalStateException(
+                    ("Consumer '%s' uses ack-mode=%s with a List<T> handler, which receives payloads only and "
+                            + "has no Acknowledgment to call: offsets would never be committed. Declare the "
+                            + "handler as Message<List<T>> and acknowledge through its "
+                            + "KafkaHeaders.ACKNOWLEDGMENT header, or use an automatic ack-mode.")
+                            .formatted(name, ackMode));
         }
 
         if ((ref.shape() == Shape.LIST_OF_MESSAGE || ref.shape() == Shape.BATCH_OUTCOME)

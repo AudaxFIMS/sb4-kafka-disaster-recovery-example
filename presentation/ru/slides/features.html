@@ -1,0 +1,45 @@
+<section id="features" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Возможности</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Ещё из коробки</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:24px">
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Batch</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">split по записям или standard конвертом; BatchOutcome с вердиктом на запись</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Ручной ack</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">ack.owner: starter — коммит после успешного обработчика, без кода</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Поздний старт</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Кластер, недоступный при старте, подключается, когда оживёт</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Топики везде</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">auto-create-topics создаёт их на всех кластерах заранее, а не в момент failover</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Schema Registry</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Свой реестр у каждого кластера; Avro, JSON, native</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Проверки на старте</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Опасные конфигурации отклоняются до того, как потеряют данные</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Health endpoint</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Активный кластер и статус каждого — в /actuator/health</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">DR_EVENT-логи</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Каждое переключение и seek — отдельной строкой; debug-режим со стектрейсами</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">10</p>
+</div>
+<aside>Обзор остальных возможностей. Batch: режим split прогоняет записи по одной с дедупликацией и коммитом префикса, standard отдаёт обработчику весь конверт. Проверки на старте — важная часть философии: конфигурация, которая выглядит защищённой, но теряет данные (например, depends-on без ручного ack или асинхронная отправка), не стартует вовсе.</aside>
+</section>

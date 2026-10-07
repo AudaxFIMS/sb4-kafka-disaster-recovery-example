@@ -19,10 +19,12 @@ import java.util.concurrent.ConcurrentHashMap;
 public class InMemoryIdempotencyStore implements IdempotencyStore {
 
     private static final Logger log = LoggerFactory.getLogger(InMemoryIdempotencyStore.class);
-    private static final long TTL_SECONDS = 3600;
+    /** Default of {@code kafka-dr.idempotency.ttl-seconds}. */
+    public static final long DEFAULT_TTL_SECONDS = 3600;
 
     private final ConcurrentHashMap<String, Instant> processedIds = new ConcurrentHashMap<>();
     private final String keyHeader;
+    private final long ttlSeconds;
 
     public InMemoryIdempotencyStore() {
         this(null);
@@ -33,7 +35,21 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
      *                  instead of the Kafka record key (kafka-dr.idempotency.key-header)
      */
     public InMemoryIdempotencyStore(String keyHeader) {
+        this(keyHeader, DEFAULT_TTL_SECONDS);
+    }
+
+    /**
+     * @param keyHeader  optional custom header to use as deduplication key
+     * @param ttlSeconds how long a message stays marked as processed
+     *                   (kafka-dr.idempotency.ttl-seconds)
+     */
+    public InMemoryIdempotencyStore(String keyHeader, long ttlSeconds) {
+        if (ttlSeconds <= 0) {
+            throw new IllegalArgumentException(
+                    "kafka-dr.idempotency.ttl-seconds must be positive, was " + ttlSeconds);
+        }
         this.keyHeader = keyHeader;
+        this.ttlSeconds = ttlSeconds;
     }
 
     /**
@@ -54,8 +70,19 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
         }
 
         String compositeKey = consumerName + ":" + key;
-        Instant previous = processedIds.putIfAbsent(compositeKey, Instant.now());
-        if (previous != null) {
+        Instant now = Instant.now();
+        Instant cutoff = now.minusSeconds(ttlSeconds);
+        // An expired mark counts as absent even before evictExpired gets to it, so a mark
+        // lives exactly ttl-seconds, not up to ttl plus the eviction interval.
+        boolean[] accepted = {false};
+        processedIds.compute(compositeKey, (k, previous) -> {
+            if (previous == null || previous.isBefore(cutoff)) {
+                accepted[0] = true;
+                return now;
+            }
+            return previous;
+        });
+        if (!accepted[0]) {
             log.debug("[{}][{}] Duplicate message with idempotency key detected: {}", clusterName, consumerName, compositeKey);
             return false;
         }
@@ -78,7 +105,7 @@ public class InMemoryIdempotencyStore implements IdempotencyStore {
 
     @Scheduled(fixedRate = 300_000)
     public void evictExpired() {
-        Instant cutoff = Instant.now().minusSeconds(TTL_SECONDS);
+        Instant cutoff = Instant.now().minusSeconds(ttlSeconds);
         int before = processedIds.size();
         processedIds.entrySet().removeIf(e -> e.getValue().isBefore(cutoff));
         int evicted = before - processedIds.size();

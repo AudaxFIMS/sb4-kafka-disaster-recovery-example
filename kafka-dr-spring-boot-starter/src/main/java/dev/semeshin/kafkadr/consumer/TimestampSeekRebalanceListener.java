@@ -24,9 +24,16 @@ public class TimestampSeekRebalanceListener implements ConsumerAwareRebalanceLis
     private static final Logger log = LoggerFactory.getLogger(TimestampSeekRebalanceListener.class);
 
     private final LastProcessedTimestampTracker tracker;
+    /** Names the consumer in log lines: one topic may be read by several. */
+    private final String logPrefix;
 
+    /**
+     * @param tracker the watermarks of the container's consumer — see
+     *                {@link LastProcessedTimestampTracker#forConsumer(String)}
+     */
     public TimestampSeekRebalanceListener(LastProcessedTimestampTracker tracker) {
         this.tracker = tracker;
+        this.logPrefix = tracker.consumer() == null ? "" : "[" + tracker.consumer() + "] ";
     }
 
     @Override
@@ -52,11 +59,11 @@ public class TimestampSeekRebalanceListener implements ConsumerAwareRebalanceLis
 
             if (offsetAndTimestamp != null) {
                 consumer.seek(tp, offsetAndTimestamp.offset());
-                log.info("DR_EVENT [{}] Seeked partition {} to offset {} (timestamp={})",
-                        tp.topic(), tp.partition(), offsetAndTimestamp.offset(), offsetAndTimestamp.timestamp());
+                log.info("DR_EVENT {}[{}] Seeked partition {} to offset {} (timestamp={})",
+                        logPrefix, tp.topic(), tp.partition(), offsetAndTimestamp.offset(), offsetAndTimestamp.timestamp());
             } else {
-                log.info("DR_EVENT [{}] No offset found for timestamp on partition {}, using default",
-                        tp.topic(), tp.partition());
+                log.info("DR_EVENT {}[{}] No offset found for timestamp on partition {}, using default",
+                        logPrefix, tp.topic(), tp.partition());
             }
         }
     }

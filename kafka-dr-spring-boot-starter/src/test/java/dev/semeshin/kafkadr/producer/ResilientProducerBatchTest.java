@@ -45,9 +45,10 @@ class ResilientProducerBatchTest {
         producer.setTopic("order-events");
         properties.setProducers(Map.of("order-events-producer", producer));
 
-        when(clusterManager.getClustersByPriority()).thenReturn(List.of("primary", "secondary"));
-        when(clusterManager.hasHealthyCluster()).thenReturn(true);
-        when(clusterManager.getActiveCluster()).thenReturn("primary");
+        when(clusterManager.getClustersByPriority("default")).thenReturn(List.of("primary", "secondary"));
+        when(clusterManager.hasHealthyCluster("default")).thenReturn(true);
+        when(clusterManager.getActiveCluster("default")).thenReturn("primary");
+        when(clusterManager.getHealthStatuses("default")).thenReturn(Map.of("primary", true, "secondary", true));
     }
 
     @Test
@@ -88,7 +89,7 @@ class ResilientProducerBatchTest {
                 .thenReturn(true, true)
                 .thenThrow(new TimeoutException("primary gone"));
         when(streamBridge.send(anyString(), eq("secondary"), any(Message.class))).thenReturn(true);
-        when(clusterManager.getActiveCluster()).thenReturn("primary", "secondary");
+        failsOverOnForceUnhealthy("default", "primary", "secondary");
 
         BatchSendResult result = producer().sendBatch("order-events", batch(5));
 
@@ -107,7 +108,7 @@ class ResilientProducerBatchTest {
         when(streamBridge.send(anyString(), eq("primary"), any(Message.class)))
                 .thenThrow(new TimeoutException("primary gone"));
         when(streamBridge.send(anyString(), eq("secondary"), any(Message.class))).thenReturn(true);
-        when(clusterManager.getActiveCluster()).thenReturn("primary", "secondary");
+        when(clusterManager.getActiveCluster("default")).thenReturn("primary", "secondary");
 
         producer().sendBatch("order-events", batch(50));
 
@@ -136,7 +137,7 @@ class ResilientProducerBatchTest {
 
     @Test
     void allClustersDownFailsEveryMessageWithoutSending() {
-        when(clusterManager.hasHealthyCluster()).thenReturn(false);
+        when(clusterManager.hasHealthyCluster("default")).thenReturn(false);
 
         BatchSendResult result = producer().sendBatch("order-events", batch(4));
 
@@ -151,7 +152,7 @@ class ResilientProducerBatchTest {
         when(streamBridge.send(anyString(), anyString(), any(Message.class)))
                 .thenReturn(true)
                 .thenThrow(new TimeoutException("gone"));
-        when(clusterManager.getActiveCluster()).thenReturn("primary", "secondary");
+        when(clusterManager.getActiveCluster("default")).thenReturn("primary", "secondary");
 
         BatchSendResult result = producer().sendBatch("order-events", batch(4));
 
@@ -175,7 +176,66 @@ class ResilientProducerBatchTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("kafka-dr.producers");
 
-        verify(clusterManager, never()).hasHealthyCluster();
+        verify(clusterManager, never()).hasHealthyCluster(anyString());
+    }
+
+    @Test
+    void restOfTheBatchIsNotTriedOnceAMessageIsTakenByNoCluster() {
+        when(streamBridge.send(anyString(), anyString(), any(Message.class))).thenAnswer(inv -> {
+            Message<?> message = inv.getArgument(2);
+            if ("k-1".equals(message.getHeaders().get(KafkaHeaders.KEY))) {
+                throw new org.apache.kafka.common.errors.TopicAuthorizationException("not taken wherever it goes");
+            }
+            return true;
+        });
+
+        BatchSendResult result = producer().sendBatch("order-events", batch(4));
+
+        // k-0 went out; k-1 was not taken; k-2 and k-3 would only repeat that.
+        assertThat(result.sent()).isEqualTo(1);
+        assertThat(result.failures()).extracting(ResilientProducer.SendResult::failure)
+                .containsOnly(ResilientProducer.Failure.ALL_CLUSTERS_FAILED);
+        verify(streamBridge, org.mockito.Mockito.times(2)).send(anyString(), eq("primary"), any(Message.class));
+        verify(streamBridge, never()).send(anyString(), eq("secondary"), any(Message.class));
+        verify(clusterManager, never()).forceUnhealthy(anyString());
+        // Held, not lost: a bridge nacks the batch from k-1.
+        assertThatThrownBy(result::orThrow).isInstanceOf(ClusterGroupUnavailableException.class);
+    }
+
+    @Test
+    void batchTheActiveClusterDoesNotTakeIsHeldNotWrittenToAStandby() {
+        when(streamBridge.send(anyString(), eq("primary"), any(Message.class)))
+                .thenThrow(new org.apache.kafka.common.errors.TopicAuthorizationException("ACL missing on primary"));
+        when(streamBridge.send(anyString(), eq("secondary"), any(Message.class))).thenReturn(true);
+
+        BatchSendResult result = producer().sendBatch("order-events", batch(3));
+
+        assertThat(result.failures()).extracting(ResilientProducer.SendResult::failure)
+                .containsOnly(ResilientProducer.Failure.ALL_CLUSTERS_FAILED);
+        // One attempt for the batch, not one per message — and nothing on the standby, where no
+        // consumer reads.
+        verify(streamBridge, org.mockito.Mockito.times(1)).send(anyString(), eq("primary"), any(Message.class));
+        verify(streamBridge, never()).send(anyString(), eq("secondary"), any(Message.class));
+        verify(clusterManager, never()).forceUnhealthy(anyString());
+    }
+
+    @Test
+    void remainderFailsUntriedOnceNoClusterIsLeft() {
+        when(clusterManager.getHealthStatuses("default")).thenReturn(Map.of("primary", true, "secondary", false));
+        when(streamBridge.send(anyString(), eq("primary"), any(Message.class)))
+                .thenReturn(true)
+                .thenThrow(new org.apache.kafka.common.errors.NotEnoughReplicasException("below min.insync.replicas"));
+
+        BatchSendResult result = producer().sendBatch("order-events", batch(4));
+
+        assertThat(result.sent()).isEqualTo(1);
+        assertThat(result.failures()).extracting(ResilientProducer.SendResult::failure)
+                .containsOnly(ResilientProducer.Failure.ALL_CLUSTERS_FAILED);
+        // The first failure ends the batch: the rest is not run through the retries one by one.
+        verify(streamBridge, org.mockito.Mockito.times(3)).send(anyString(), eq("primary"), any(Message.class));
+        verify(clusterManager).forceUnhealthy("primary");
+        verify(streamBridge, never()).send(anyString(), eq("secondary"), any(Message.class));
+        assertThatThrownBy(result::orThrow).isInstanceOf(ClusterGroupUnavailableException.class);
     }
 
     @Test
@@ -186,6 +246,36 @@ class ResilientProducerBatchTest {
 
         assertThat(result.results()).extracting(ResilientProducer.SendResult::messageId)
                 .containsExactly("k-0", "k-1", "k-2", "k-3");
+    }
+
+    @Test
+    void restOfTheBatchFollowsAFailbackThatHappensMidBatch() {
+        java.util.concurrent.atomic.AtomicReference<String> active = new java.util.concurrent.atomic.AtomicReference<>("secondary");
+        when(clusterManager.getActiveCluster("default")).thenAnswer(inv -> active.get());
+        when(streamBridge.send(anyString(), eq("secondary"), any(Message.class))).thenAnswer(inv -> {
+            // failback-after has just passed: the group returns to the primary while the batch runs.
+            active.set("primary");
+            return true;
+        });
+        when(streamBridge.send(anyString(), eq("primary"), any(Message.class))).thenReturn(true);
+
+        BatchSendResult result = producer().sendBatch("order-events", batch(3));
+
+        // The standby is still healthy, but nobody reads it any more: the rest goes to the primary.
+        assertThat(result.results()).extracting(ResilientProducer.SendResult::cluster)
+                .containsExactly("secondary", "primary", "primary");
+    }
+
+    /** The manager as it behaves: forcing the active cluster down elects the next one. */
+    private void failsOverOnForceUnhealthy(String group, String first, String next) {
+        java.util.concurrent.atomic.AtomicReference<String> active = new java.util.concurrent.atomic.AtomicReference<>(first);
+        when(clusterManager.getActiveCluster(group)).thenAnswer(inv -> active.get());
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (inv.getArgument(0).equals(active.get())) {
+                active.set(next);
+            }
+            return null;
+        }).when(clusterManager).forceUnhealthy(anyString());
     }
 
     private ResilientProducer producer() {

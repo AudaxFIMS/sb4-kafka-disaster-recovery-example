@@ -1,0 +1,45 @@
+<section id="cons" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Cons and limitations</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">What to know up front</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:28px 56px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Active-passive only</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">One cluster of a group is read and written; MirrorMaker 2 replicates one way</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">No exactly-once across Kafkas</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">A crash between send and commit repeats a record — the IdempotencyStore drops it</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Deduplication in memory by default</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Marks are lost on restart; production needs a store of its own</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">A held record stalls its thread</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">The consumer waits up to max-hold; after that, without a DLQ, the record is skipped</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Detection takes time</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Probe-driven failover takes interval × threshold; a failing send speeds it up</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Missing topic: a ~45 s block</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">The first send waits for the SCS provisioner — better to create topics before startup</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Tied to the stack</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Spring Boot 4, SCS 5, Kafka binder; registry errors read in Confluent 8.x shapes</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">A large configuration surface</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Groups, depends-on, ack, batch — it takes discipline and reading the README</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">13</p>
+</div>
+<aside>An honest list of limitations. The most fundamental is the active-passive model: the starter does no active-active and does not replicate data itself. Exactly-once across different Kafkas is impossible in principle — no transaction spans two clusters — hence the bet on the receiver's idempotency. A held record is a deliberate trade-off, "a visible delay beats a silent loss", bounded by max-hold. The ~45 s block on a missing topic is Spring Cloud Stream's own behaviour and is documented. Schema Registry error recognition was checked against the Confluent 8.2 sources; it is worth re-checking on a major client upgrade.</aside>
+</section>

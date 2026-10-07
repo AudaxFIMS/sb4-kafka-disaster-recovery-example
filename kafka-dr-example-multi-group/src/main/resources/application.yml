@@ -1,0 +1,185 @@
+server:
+  port: 8085
+
+kafka-dr:
+  enabled: true
+  auto-create-topics: true
+
+  # Global settings. Every cluster group inherits them and may narrow them.
+  default-environment:
+    spring.cloud.stream.kafka.binder:
+      replication-factor: 1
+      configuration:
+        reconnect.backoff.ms: 1000
+        reconnect.backoff.max.ms: 10000
+        request.timeout.ms: 5000
+        default.api.timeout.ms: 10000
+        socket.connection.setup.timeout.ms: 3000
+
+  default-producer-properties:
+    sync: true
+    configuration:
+      acks: all
+      max.block.ms: 5000
+      delivery.timeout.ms: 10000
+      request.timeout.ms: 5000
+      key.serializer: org.apache.kafka.common.serialization.StringSerializer
+
+  failover:
+    seek-by-timestamp: true
+
+  health-check:
+    interval-ms: 5000
+    timeout-ms: 2000
+    failure-threshold: 2
+    recovery-threshold: 3
+
+  # Two independent Kafkas. Each has its own active cluster, fails over on its own and is
+  # replicated by its own MirrorMaker (docker-compose-multigroup.yml). Binder ids are
+  # <group>-<cluster>: core-a, core-b, analytics-a, analytics-b.
+  cluster-groups:
+    core:
+      clusters:
+        a:
+          bootstrap-servers: ${KAFKA_CORE_A:localhost:9192}
+          priority: 1
+        b:
+          bootstrap-servers: ${KAFKA_CORE_B:localhost:9194}
+          priority: 2
+
+    analytics:
+      # Narrower than the global health-check: analytics is the dependency of the core bridge,
+      # so its outage is detected after two failed probes, two seconds apart. Not after one: a
+      # single slow probe would fail over and back within seconds, and records bridged to b in
+      # between are not replicated back to a.
+      health-check:
+        interval-ms: 2000
+        failure-threshold: 2
+      clusters:
+        a:
+          bootstrap-servers: ${KAFKA_ANALYTICS_A:localhost:9292}
+          priority: 1
+        b:
+          bootstrap-servers: ${KAFKA_ANALYTICS_B:localhost:9294}
+          priority: 2
+
+  consumers:
+    # Bridge core -> analytics. While analytics has no healthy cluster this consumer is paused,
+    # and a record already in flight is held back with a nack instead of failing — so an
+    # analytics outage leaves the orders waiting in core rather than skipped.
+    orders-bridge:
+      cluster-group: core
+      depends-on: analytics
+      # Redelivery pause of a held-back record (the default).
+      depends-on-nack-interval-ms: 1000
+      # How long one record may be held while analytics is UP yet does not take it — a missing
+      # ACL, a schema registry down. Then it takes the ordinary failure path below. Time analytics
+      # spends down does not count: the consumer is paused and waits however long that takes.
+      # Shorter than the 10-minute default, so a demo shows it within minutes.
+      depends-on-max-hold-ms: 120000
+      topic: orders
+      group: mg-orders-bridge
+      handler: bridgeOrder
+      content-type: json
+      # depends-on needs a manual ack-mode: a nack exists only there. With ack.owner=starter the
+      # handler has no acknowledgment code; the starter commits once it returns.
+      ack:
+        owner: starter
+      properties:
+        ack-mode: MANUAL
+        # Failures that are not about the dependency still take the ordinary retry path.
+        max-attempts: 1
+
+    # Bridge analytics -> core: the mirror image, depending on core.
+    analytics-scorer:
+      cluster-group: analytics
+      depends-on: core
+      depends-on-max-hold-ms: 120000
+      topic: order-analytics
+      group: mg-scorer
+      handler: scoreOrder
+      content-type: json
+      ack:
+        owner: starter
+      properties:
+        ack-mode: MANUAL
+        max-attempts: 1
+
+    # End of the round trip, back in core.
+    scores-sink:
+      cluster-group: core
+      topic: order-scores
+      group: mg-scores
+      handler: recordScore
+      content-type: json
+
+    # Topic "audit" with consumer group "audit" in BOTH groups: two topics in two Kafkas.
+    # Within one group that pair would be rejected; across groups the starter tells the two
+    # listener containers apart by binding name.
+    core-audit:
+      cluster-group: core
+      topic: audit
+      group: audit
+      handler: auditCore
+      content-type: string
+
+    analytics-audit:
+      cluster-group: analytics
+      topic: audit
+      group: audit
+      handler: auditAnalytics
+      content-type: string
+
+  producers:
+    orders:
+      cluster-group: core
+      topic: orders
+      content-type: json
+
+    order-analytics:
+      cluster-group: analytics
+      topic: order-analytics
+      content-type: json
+
+    order-scores:
+      cluster-group: core
+      topic: order-scores
+      content-type: json
+
+    # Same topic in both groups — reachable only by producer name: to("core-audit").
+    core-audit:
+      cluster-group: core
+      topic: audit
+      content-type: string
+
+    analytics-audit:
+      cluster-group: analytics
+      topic: audit
+      content-type: string
+
+  idempotency:
+    key-prefix: multi-group
+
+logging:
+  level:
+    dev.semeshin.kafkadr: INFO
+    org.apache.kafka.clients.admin.AdminClientConfig: WARN
+    org.apache.kafka.clients.consumer.ConsumerConfig: WARN
+    org.apache.kafka.clients.producer.ProducerConfig: WARN
+    org.apache.kafka.common.utils.AppInfoParser: WARN
+    org.apache.kafka.common.config.AbstractConfig: WARN
+    org.apache.kafka.common.metrics.Metrics: WARN
+    org.apache.kafka.clients.admin.internals.AdminMetadataManager: ERROR
+    org.apache.kafka.clients.Metadata: ERROR
+    org.apache.kafka.clients.NetworkClient: ERROR
+    org.apache.kafka.clients.FetchSessionHandler: ERROR
+    org.springframework.kafka.support.LoggingProducerListener: OFF
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always

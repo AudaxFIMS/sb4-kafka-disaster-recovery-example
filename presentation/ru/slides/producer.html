@@ -1,0 +1,18 @@
+<section id="producer" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Продюсер</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Вердикт выносится только по доказательству</h2>
+</div>
+<table style="font-size:28px;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif">
+<tr style="background:#E9E5DC"><th style="width:42%;text-align:left">Чем кончилась попытка</th><th style="width:22%;text-align:left">Доказывает</th><th style="width:36%;text-align:left">Что дальше</th></tr>
+<tr><td>Не сериализуется, запись слишком большая или невалидная</td><td>вину сообщения</td><td>SERIALIZATION / REJECTED, без ретраев; кластер в порядке</td></tr>
+<tr style="background:#FCFBF8"><td>Кластер недоступен; ретраибельная ошибка не прошла</td><td>поломку кластера</td><td>Failover всей группы — консьюмеры уходят вместе</td></tr>
+<tr><td>Нет ACL, нет топика, сбой Schema Registry</td><td>ничего</td><td>ALL_CLUSTERS_FAILED — мост придерживает запись</td></tr>
+</table>
+<p style="font-size:30px;line-height:1.4;color:#4A5568">Пишем <b style="color:#1A2433">только в активный кластер</b> — туда, откуда читают консьюмеры. Запись на резервный осталась бы непрочитанной: MirrorMaker копирует в одну сторону.</p>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">7</p>
+</div>
+<aside>Главный урок разработки. Любая ошибка в сторону «виновато сообщение» для моста означает потерю — запись уходит в DLQ. Любая ошибка в сторону «виноват кластер» — лишний failover всей группы и флаппинг. Поэтому: вина сообщения — только для доказуемых свойств записи; поломка кластера — только когда он недоступен или ретраибельная ошибка Kafka не прошла; всё остальное — запись придерживается. Отправка всегда синхронная: стартер сам выставляет sync: true. Правило «только активный кластер» найдено живым прогоном: обход на резервный кластер оставлял записи непрочитанными.</aside>
+</section>

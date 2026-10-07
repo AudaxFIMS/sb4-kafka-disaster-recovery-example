@@ -213,6 +213,17 @@ class KafkaAdminHelperTest {
     }
 
     @Test
+    void unknownClusterIdProvisionsNothingAndSaysSo() {
+        KafkaClusterProperties props = singleClusterProperties();
+        addConsumer(props, "orders");
+
+        // "core" is not a binder id here; the cluster is "primary".
+        KafkaAdminHelper.provisionTopics("core", "kafka:9092", props);
+
+        adminClientStatic.verify(() -> AdminClient.create(any(Map.class)), never());
+    }
+
+    @Test
     void createAdminClientWithoutExtraPropsUsesDefaults() {
         AdminClient result = KafkaAdminHelper.createAdminClient("kafka:9092", 1000);
         assertThat(result).isSameAs(adminClient);

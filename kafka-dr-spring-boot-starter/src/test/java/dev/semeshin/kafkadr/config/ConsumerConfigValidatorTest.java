@@ -4,13 +4,19 @@ import dev.semeshin.kafkadr.config.KafkaClusterProperties.BatchConfig;
 import dev.semeshin.kafkadr.config.KafkaClusterProperties.ConsumerConfig;
 import dev.semeshin.kafkadr.consumer.AckPolicy;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(OutputCaptureExtension.class)
 class ConsumerConfigValidatorTest {
 
     @Test
@@ -250,6 +256,181 @@ class ConsumerConfigValidatorTest {
         // The acknowledgment arrives after the handler returns, so the watermark can never
         // follow it and seek-by-timestamp silently degrades to committed offsets.
         assertThatCode(() -> ConsumerConfigValidator.validate(props)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void sameTopicAndGroupInDifferentClusterGroupsIsFine() {
+        KafkaClusterProperties props = twoClusterGroups(
+                inGroup(consumer("orders-core", "orders", "shared-group"), "core"),
+                inGroup(consumer("orders-analytics", "orders", "shared-group"), "analytics"));
+
+        // Two Kafkas: the customizer tells the containers apart by binding name.
+        assertThatCode(() -> ConsumerConfigValidator.validate(props)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void sameTopicAndGroupWithinOneClusterGroupIsStillRejected() {
+        KafkaClusterProperties props = twoClusterGroups(
+                inGroup(consumer("orders-main", "orders", "shared-group"), "core"),
+                inGroup(consumer("orders-audit", "orders", "shared-group"), "core"));
+
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(props))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("orders-audit");
+    }
+
+    @Test
+    void seekByTimestampWarningFollowsTheConsumerClusterGroup(CapturedOutput output) {
+        KafkaClusterProperties props = twoClusterGroups(
+                inGroup(asyncManual(consumer("orders", "orders", "g1")), "core"),
+                inGroup(asyncManual(consumer("scores", "scores", "g2")), "analytics"));
+        props.getClusterGroups().get("analytics").getFailover().setSeekByTimestamp(true);
+
+        ConsumerConfigValidator.validate(props);
+
+        assertThat(output).contains("[scores] ack.async-acks with failover.seek-by-timestamp")
+                .doesNotContain("[orders] ack.async-acks with failover.seek-by-timestamp");
+    }
+
+    // --- depends-on ----------------------------------------------------------------------
+
+    @Test
+    void dependsOnWithAManualAckModeIsAccepted() {
+        KafkaClusterProperties props = twoClusterGroups(
+                dependsOnAnalytics(withAckMode(inGroup(consumer("bridge", "orders", "g1"), "core"), "MANUAL")));
+
+        assertThatCode(() -> ConsumerConfigValidator.validate(props)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void dependsOnWithoutManualAcknowledgmentIsRejected() {
+        KafkaClusterProperties props = twoClusterGroups(
+                dependsOnAnalytics(inGroup(consumer("bridge", "orders", "g1"), "core")));
+
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(props))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("needs ack-mode=MANUAL or MANUAL_IMMEDIATE")
+                .hasMessageContaining("BATCH (container default)")
+                .hasMessageContaining("kafka-dr.consumers.bridge.properties.ack-mode=MANUAL");
+    }
+
+    @Test
+    void dependsOnInSplitModeNeedsManualImmediate() {
+        ConsumerConfig bridge = withAckMode(inGroup(consumer("bridge", "orders", "g1"), "core"), "MANUAL");
+        bridge.getBatch().setEnabled(true);
+        KafkaClusterProperties props = twoClusterGroups(dependsOnAnalytics(bridge));
+
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(props))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("batch.mode=split, which needs ack-mode=MANUAL_IMMEDIATE");
+    }
+
+    @Test
+    void dependsOnInSplitModeRefusesSkipFailed() {
+        ConsumerConfig bridge = withAckMode(inGroup(consumer("bridge", "orders", "g1"), "core"), "MANUAL_IMMEDIATE");
+        bridge.getBatch().setEnabled(true);
+        bridge.getBatch().setErrorPolicy(BatchConfig.ErrorPolicy.SKIP_FAILED);
+        KafkaClusterProperties props = twoClusterGroups(dependsOnAnalytics(bridge));
+
+        // The record that failed because the dependency went down would be skipped and committed.
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(props))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("error-policy=skip-failed");
+
+        bridge.getBatch().setErrorPolicy(BatchConfig.ErrorPolicy.FAIL_BATCH);
+        ConsumerConfigValidator.validate(props);
+    }
+
+    @Test
+    void dependsOnMaxHoldMustBePositive() {
+        ConsumerConfig bridge = withAckMode(inGroup(consumer("bridge", "orders", "g1"), "core"), "MANUAL");
+        bridge.setDependsOnMaxHoldMs(0);
+        KafkaClusterProperties props = twoClusterGroups(dependsOnAnalytics(bridge));
+
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(props))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("depends-on-max-hold-ms=0");
+    }
+
+    @Test
+    void dependsOnWithAsyncAcksIsRejected() {
+        ConsumerConfig bridge = withAckMode(inGroup(consumer("bridge", "orders", "g1"), "core"), "MANUAL");
+        bridge.getAck().setAsyncAcks(true);
+        KafkaClusterProperties props = twoClusterGroups(dependsOnAnalytics(bridge));
+
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(props))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("out-of-order commits");
+    }
+
+    @Test
+    void dependsOnAnUnknownGroupIsRejected() {
+        ConsumerConfig bridge = withAckMode(inGroup(consumer("bridge", "orders", "g1"), "core"), "MANUAL");
+        bridge.setDependsOn(List.of("billing"));
+
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(twoClusterGroups(bridge)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("depends on cluster group 'billing', which is not configured")
+                .hasMessageContaining("[core, analytics]");
+    }
+
+    @Test
+    void dependsOnTheOwnGroupIsRejected() {
+        ConsumerConfig bridge = withAckMode(inGroup(consumer("bridge", "orders", "g1"), "core"), "MANUAL");
+        bridge.setDependsOn(List.of("core"));
+
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(twoClusterGroups(bridge)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("depends on its own cluster group 'core'");
+    }
+
+    @Test
+    void nonPositiveNackIntervalIsRejected() {
+        ConsumerConfig bridge = dependsOnAnalytics(
+                withAckMode(inGroup(consumer("bridge", "orders", "g1"), "core"), "MANUAL"));
+        bridge.setDependsOnNackIntervalMs(0);
+
+        assertThatThrownBy(() -> ConsumerConfigValidator.validate(twoClusterGroups(bridge)))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("depends-on-nack-interval-ms=0");
+    }
+
+    private static ConsumerConfig dependsOnAnalytics(ConsumerConfig consumer) {
+        consumer.setDependsOn(List.of("analytics"));
+        return consumer;
+    }
+
+    private static ConsumerConfig withAckMode(ConsumerConfig consumer, String ackMode) {
+        consumer.setProperties(Map.of("ack-mode", ackMode));
+        return consumer;
+    }
+
+    private static ConsumerConfig asyncManual(ConsumerConfig consumer) {
+        consumer.setProperties(Map.of("ack-mode", "MANUAL"));
+        consumer.getAck().setAsyncAcks(true);
+        return consumer;
+    }
+
+    private static ConsumerConfig inGroup(ConsumerConfig consumer, String clusterGroup) {
+        consumer.setClusterGroup(clusterGroup);
+        return consumer;
+    }
+
+    private static KafkaClusterProperties twoClusterGroups(ConsumerConfig... consumers) {
+        KafkaClusterProperties properties = props(consumers);
+        Map<String, KafkaClusterProperties.ClusterGroupConfig> groups = new LinkedHashMap<>();
+        groups.put("core", clusterGroup("primary", "core-a:9092"));
+        groups.put("analytics", clusterGroup("dc1", "an-a:9092"));
+        properties.setClusterGroups(groups);
+        return properties;
+    }
+
+    private static KafkaClusterProperties.ClusterGroupConfig clusterGroup(String cluster, String brokers) {
+        KafkaClusterProperties.ClusterConfig cfg = new KafkaClusterProperties.ClusterConfig();
+        cfg.setBootstrapServers(brokers);
+        KafkaClusterProperties.ClusterGroupConfig group = new KafkaClusterProperties.ClusterGroupConfig();
+        group.setClusters(Map.of(cluster, cfg));
+        return group;
     }
 
     private static KafkaClusterProperties props(ConsumerConfig... consumers) {

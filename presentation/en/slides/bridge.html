@@ -1,0 +1,29 @@
+<section id="bridge" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:44px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Bridges between Kafkas · depends-on</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">While the target Kafka is down, records wait instead of being lost</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">1 · Pause</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">The consumer's binding is paused while the dependency group has no healthy cluster. No rebalance.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">2 · Gate</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Records already polled never reach the handler: a nack, redelivered after an interval. No retries spent.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">3 · Reclassify</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">A failed send inside the handler becomes a nack, not an exception. The idempotency mark is released.</p>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:32px;background:#0F1B2D;border-radius:16px;padding:32px 40px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;font-weight:600;color:#F0954F;white-space:nowrap">max-hold</p>
+<p style="font-size:28px;line-height:1.4;color:#D6DEEA">When the dependency is up yet the record still does not go through, it is held for at most depends-on-max-hold-ms (10 min). Time the group is down does not count.</p>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">9</p>
+</div>
+<aside>A bridge is a consumer in one Kafka that writes to another. Without depends-on, the target Kafka going down looks like a handler error: the retries run out in seconds and the record is skipped. With depends-on there are three layers: pause, a gate before the handler, and reclassifying the failure. A nack does not count as a delivery attempt, so the wait can last as long as the outage. max-hold only bounds the case "the group is up but the record is not taken" — a missing ACL, for instance — which would otherwise stall the thread forever. A manual ack-mode is required and checked at startup.</aside>
+</section>
