@@ -1,0 +1,45 @@
+<section id="cons" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Минусы и ограничения</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">О чём важно знать заранее</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:28px 56px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Только active-passive</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Пишем и читаем один кластер группы; репликация — MirrorMaker 2 в одну сторону</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Нет exactly-once между Kafka</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Сбой между отправкой и коммитом даёт повтор — его отсекает IdempotencyStore</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Дедупликация по умолчанию в памяти</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">После рестарта метки теряются; для прода нужно своё хранилище</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Придержанная запись тормозит поток</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">До max-hold консьюмер не двигается; после — без DLQ запись пропускается</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Обнаружение — не мгновенно</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Failover по пробам занимает интервал × порог; отправка ускоряет его</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Отсутствующий топик: блок ~45 с</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Первая отправка ждёт провижнер SCS — топики лучше создавать до старта</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Привязка к стеку</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Spring Boot 4, SCS 5, Kafka binder; ошибки реестра — по формам Confluent 8.x</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Большая поверхность настроек</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Группы, depends-on, ack, batch — нужна дисциплина и чтение README</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">13</p>
+</div>
+<aside>Честный список ограничений. Самое принципиальное — модель active-passive: стартер не делает active-active и не реплицирует данные сам. Exactly-once между разными Kafka невозможен в принципе: нет транзакции, охватывающей два кластера, поэтому ставка на идемпотентность получателя. Придержанная запись — осознанный компромисс «лучше видимая задержка, чем тихая потеря», ограниченный max-hold. Блок примерно 45 секунд на отсутствующем топике — поведение самого Spring Cloud Stream, оно задокументировано. Распознавание ошибок Schema Registry проверено по исходникам Confluent 8.2; при смене мажорной версии клиента это место стоит перепроверить.</aside>
+</section>

@@ -1,0 +1,45 @@
+<section id="features" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Features</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Also out of the box</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:24px">
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Batch</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">split per record or standard as an envelope; BatchOutcome with a verdict per record</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Manual ack</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">ack.owner: starter — the commit follows a successful handler, no code</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Late start</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">A cluster down at startup is attached once it comes back</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Topics everywhere</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">auto-create-topics creates them on every cluster up front, not at failover</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Schema Registry</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">A registry per cluster; Avro, JSON, native</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Startup checks</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Dangerous configurations are refused before they can lose data</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Health endpoint</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">The active cluster and each cluster's status in /actuator/health</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">DR_EVENT logs</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Every switch and seek on its own line; a debug mode with stack traces</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">10</p>
+</div>
+<aside>An overview of the remaining features. Batch: split mode runs records one by one with deduplication and commits the processed prefix; standard hands the handler the whole envelope. Startup checks are part of the philosophy: a configuration that looks protected but loses data — depends-on without a manual ack, or asynchronous sends — does not start at all.</aside>
+</section>

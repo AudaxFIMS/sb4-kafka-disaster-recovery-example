@@ -1,0 +1,29 @@
+<section id="problem" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Проблема</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Что происходит, когда кластер Kafka падает</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Консьюмеры встают</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Приложение привязано к одному кластеру. Переключение на резервный — ручная правка конфигурации и рестарт.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Продюсеры теряют сообщения</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Отправка падает, а обработчик часто глотает исключение — запись подтверждена, но никуда не ушла.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Смещения не совпадают</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">У резервного кластера свои offset'ы. После переключения — пропуск записей или повторная обработка.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Мосты между Kafka рвутся</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Сервис, перекладывающий данные из одной Kafka в другую, за секунды тратит ретраи и пропускает записи.</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">2</p>
+</div>
+<aside>Четыре типичных последствия падения кластера. Важно: даже при настроенном MirrorMaker 2 данные на резервном кластере есть, но приложение само туда не переходит, а смещения там другие. И отдельный класс проблем — сервисы-мосты между разными Kafka: при падении целевой Kafka отправка падает быстро, ретраи кончаются, запись пропускается.</aside>
+</section>

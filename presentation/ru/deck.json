@@ -1,0 +1,20 @@
+{
+  "v": 4,
+  "createdOnFiles": {"v": 1, "at": "2026-10-07T15:04:50Z"},
+  "lists": "css",
+  "title": "Kafka DR Starter",
+  "cover": "cover",
+  "order": ["cover", "problem", "solution", "architecture", "failover", "no-loss", "producer", "groups", "bridge", "features", "verified", "pros", "cons", "fit"],
+  "sections": {
+    "s1": {"description": "Зачем: что ломается, когда падает кластер Kafka, и что предлагает стартер", "start": "cover"},
+    "s2": {"description": "Как устроено: выборы кластера, переключение, защита от потерь и дублей, продюсер", "start": "architecture"},
+    "s3": {"description": "Несколько независимых Kafka и мосты между ними", "start": "groups"},
+    "s4": {"description": "Чем подтверждено: тесты и живые прогоны", "start": "verified"},
+    "s5": {"description": "Оценка: плюсы, минусы и когда применять", "start": "pros"}
+  },
+  "faces": {
+    "ibm-plex-sans": {"family": "IBM Plex Sans", "href": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"},
+    "jetbrains-mono": {"family": "JetBrains Mono", "href": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap"}
+  },
+  "designSystems": []
+}

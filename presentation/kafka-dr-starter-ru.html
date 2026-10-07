@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafka DR Starter</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  html, body { margin: 0; background: #1b1f27; }
+  .slide-wrap { position: relative; width: min(100vw, 177.78vh); aspect-ratio: 16 / 9; margin: 0 auto 24px; overflow: hidden; }
+  .slide-wrap > section { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; box-sizing: border-box; transform-origin: 0 0; }
+  section * { margin: 0; box-sizing: border-box; }
+  section ul { padding-left: 1.2em; }
+  section table { border-collapse: collapse; width: 100%; }
+  section th, section td { padding: 0.35em 0.6em; border-bottom: 1px solid rgba(26, 36, 51, 0.15); vertical-align: top; }
+  x-shape { display: block; flex-shrink: 0; }
+  x-shape[kind="arrow-right"] { clip-path: polygon(0 30%, 60% 30%, 60% 0, 100% 50%, 60% 100%, 60% 70%, 0 70%); }
+  .x-icon { display: inline-block; flex-shrink: 0; }
+  aside { display: none; }
+  body.notes aside { display: block; position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 24px; background: rgba(15, 27, 45, 0.92); color: #f5f3ee; font: 22px/1.4 'IBM Plex Sans', Arial, sans-serif; }
+  .hint { color: #8fa0b8; font: 14px 'IBM Plex Sans', Arial, sans-serif; text-align: center; padding: 8px 0 16px; }
+  @media print {
+    @page { size: 1920px 1080px; margin: 0; }
+    html, body { background: none; }
+    .hint { display: none; }
+    .slide-wrap { width: 1920px; height: 1080px; aspect-ratio: auto; margin: 0; page-break-after: always; }
+    .slide-wrap > section { transform: none !important; }
+  }
+</style>
+</head>
+<body>
+<p class="hint">Kafka DR Starter · N — speaker notes · Ctrl/Cmd+P — PDF</p>
+<div class="slide-wrap"><section id="cover" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;justify-content:center;gap:40px">
+<div style="position:absolute;left:0px;top:0px;width:24px;height:1080px;background:#E07A2E"></div>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Spring Boot starter · Kafka disaster recovery</p>
+<h1 style="font-size:132px;font-weight:700;line-height:1.05;color:#F5F3EE">Kafka DR Starter</h1>
+<p style="font-size:48px;line-height:1.3;color:#B8C4D6;width:1400px">Переключение между кластерами Kafka без потерь, без дублей и без кода отказоустойчивости в приложении</p>
+<p style="position:absolute;left:128px;bottom:96px;width:1664px;font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;color:#8FA0B8">Spring Boot 4 · Spring Cloud Stream 5 · spring-kafka 4 · Java 17+</p>
+<aside>Стартер для Spring Boot, который делает приложение на Spring Cloud Stream устойчивым к падению кластера Kafka. Ключевая идея: приложение пишет обычные обработчики, а переключение кластеров, дедупликация и восстановление позиции чтения задаются конфигурацией.</aside>
+</section></div>
+<div class="slide-wrap"><section id="problem" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Проблема</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Что происходит, когда кластер Kafka падает</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:32px">
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Консьюмеры встают</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Приложение привязано к одному кластеру. Переключение на резервный — ручная правка конфигурации и рестарт.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Продюсеры теряют сообщения</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Отправка падает, а обработчик часто глотает исключение — запись подтверждена, но никуда не ушла.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Смещения не совпадают</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">У резервного кластера свои offset'ы. После переключения — пропуск записей или повторная обработка.</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Мосты между Kafka рвутся</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Сервис, перекладывающий данные из одной Kafka в другую, за секунды тратит ретраи и пропускает записи.</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">2</p>
+</div>
+<aside>Четыре типичных последствия падения кластера. Важно: даже при настроенном MirrorMaker 2 данные на резервном кластере есть, но приложение само туда не переходит, а смещения там другие. И отдельный класс проблем — сервисы-мосты между разными Kafka: при падении целевой Kafka отправка падает быстро, ретраи кончаются, запись пропускается.</aside>
+</section></div>
+<div class="slide-wrap"><section id="solution" data-transition="fade" style="background:#E07A2E;color:#0F1B2D;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;justify-content:center;gap:48px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;color:#0F1B2D;letter-spacing:2px;text-transform:uppercase">Решение</p>
+<h2 style="font-size:80px;font-weight:600;line-height:1.15;color:#0F1B2D;width:1600px">Приложение пишет обычные обработчики. Выбор кластера, переключение, дедупликацию и восстановление позиции делает стартер — по конфигурации.</h2>
+<p style="font-size:36px;line-height:1.4;color:#1F2A3C;width:1500px">Один YAML: кластеры с приоритетами, консьюмеры, продюсеры. Данные между кластерами реплицирует MirrorMaker 2.</p>
+<aside>Ключевая мысль презентации. Стартер не заменяет репликацию — её делает MirrorMaker 2. Он решает вопрос «куда сейчас читать и писать и как не потерять и не задвоить данные при переходе».</aside>
+</section></div>
+<div class="slide-wrap"><section id="architecture" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Как устроено</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Наблюдать, решать, действовать</h2>
+</div>
+<div style="display:flex;align-items:center;gap:24px">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">ClusterHealthChecker</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Пробы AdminClient по каждому кластеру с заданным интервалом</p>
+</div>
+<x-shape kind="arrow-right" style="width:64px;height:36px;background:#E07A2E"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">ActiveClusterManager</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Пороги, выборы по приоритету, failback-after, сохранённое состояние</p>
+</div>
+<x-shape kind="arrow-right" style="width:64px;height:36px;background:#E07A2E"></x-shape>
+<div style="flex:1;display:flex;flex-direction:column;gap:24px">
+<div style="display:flex;flex-direction:column;gap:8px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px 36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">BindingLifecycleManager</p>
+<p style="font-size:26px;line-height:1.35;color:#4A5568">Останавливает и запускает консьюмеров</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px 36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">ResilientProducer</p>
+<p style="font-size:26px;line-height:1.35;color:#4A5568">Пишет в активный кластер</p>
+</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:24px;background:#0F1B2D;border-radius:16px;padding:32px 40px">
+<p style="font-size:30px;font-weight:600;color:#F5F3EE">Primary</p>
+<x-shape kind="arrow-right" style="width:72px;height:36px;background:#F0954F"></x-shape>
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;color:#F0954F">MirrorMaker 2</p>
+<x-shape kind="arrow-right" style="width:72px;height:36px;background:#F0954F"></x-shape>
+<p style="font-size:30px;font-weight:600;color:#F5F3EE">Standby</p>
+<p style="font-size:26px;color:#B8C4D6">— репликация вне стартера, топики с теми же именами</p>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">4</p>
+</div>
+<aside>Три роли. Health checker наблюдает: раз в интервал (по умолчанию 5 с) спрашивает каждый кластер через AdminClient. Менеджер решает: считает подряд идущие неудачи и успехи, выбирает активный кластер по приоритету, учитывает окно failback-after и сохраняет состояние. Исполнители действуют: binding'и консьюмеров останавливаются на старом кластере и запускаются на новом, продюсер всегда пишет в активный. Репликация — MirrorMaker 2 с IdentityReplicationPolicy, чтобы имена топиков совпадали.</aside>
+</section></div>
+<div class="slide-wrap"><section id="failover" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Переключение</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">Failover за пять шагов — без участия человека</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:24px">
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">01</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Проба</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">describeCluster каждые 5 с; глубокая проба проверяет лидеров партиций</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">02</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Порог</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">2 неудачи подряд — кластер нездоров. Отправка, доказавшая падение, — сразу</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">03</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Выборы</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Активным становится здоровый кластер с наивысшим приоритетом</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">04</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Переход</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Стоп консьюмеров на старом, старт на новом, seek по времени</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:16px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:44px;font-weight:600;color:#F0954F">05</p>
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Возврат</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">После 3 успешных проб и не раньше failback-after</p>
+</div>
+</div>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6;width:1500px">Состояние переключения хранится в <span style="color:#F0954F">FailoverStateStore</span> (in-memory или Redis): окно failback-after переживает рестарт приложения.</p>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">5</p>
+</div>
+<aside>Цифры — значения по умолчанию, все настраиваются, в том числе отдельно для каждой группы кластеров. Продюсер может ускорить переключение: если отправка доказала, что кластер недоступен, он помечается нездоровым сразу, не дожидаясь проб. failback-after — время суток, до которого автоматический возврат на основной кластер запрещён (например, ночное окно обслуживания). Чтобы окно соблюдалось и после рестарта, состояние хранится во внешнем хранилище — в примере это Redis.</aside>
+</section></div>
+<div class="slide-wrap"><section id="no-loss" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Целостность данных</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Без пропусков и без дублей после перехода</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<span class="x-icon" style="width:48px;height:48px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Search"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg></span>
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Seek по времени</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">На новом кластере чтение начинается с отметки времени последней обработанной записи — у каждого консьюмера своей.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<span class="x-icon" style="width:48px;height:48px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Key"><circle cx="7.5" cy="15.5" r="4.5"/><line x1="10.7" y1="12.3" x2="20" y2="3"/><line x1="16" y1="7" x2="19" y2="10"/><line x1="18" y1="5" x2="21" y2="8"/></svg></span>
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Идемпотентность</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Записи на границе перехода отсекаются по ключу в IdempotencyStore: in-memory или своё хранилище, например Redis.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:16px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:40px">
+<span class="x-icon" style="width:48px;height:48px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Lock"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+<h3 style="font-size:36px;font-weight:600;color:#1A2433">Отметка после коммита</h3>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Отметка двигается только после коммита offset'а. С ack.owner: starter стартер коммитит сам — обработчику не нужен код подтверждения.</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">6</p>
+</div>
+<aside>Три механизма работают вместе. Seek по времени убирает пропуски: offset'ы на кластерах разные, а время записи MirrorMaker сохраняет. Seek приблизителен — на границе возможны повторы, их отсекает идемпотентность по ключу сообщения. Третье — отметка времени двигается только после реального коммита: иначе после failover можно перепрыгнуть записи, которые так и не были подтверждены.</aside>
+</section></div>
+<div class="slide-wrap"><section id="producer" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Продюсер</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Вердикт выносится только по доказательству</h2>
+</div>
+<table style="font-size:28px;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif">
+<tr style="background:#E9E5DC"><th style="width:42%;text-align:left">Чем кончилась попытка</th><th style="width:22%;text-align:left">Доказывает</th><th style="width:36%;text-align:left">Что дальше</th></tr>
+<tr><td>Не сериализуется, запись слишком большая или невалидная</td><td>вину сообщения</td><td>SERIALIZATION / REJECTED, без ретраев; кластер в порядке</td></tr>
+<tr style="background:#FCFBF8"><td>Кластер недоступен; ретраибельная ошибка не прошла</td><td>поломку кластера</td><td>Failover всей группы — консьюмеры уходят вместе</td></tr>
+<tr><td>Нет ACL, нет топика, сбой Schema Registry</td><td>ничего</td><td>ALL_CLUSTERS_FAILED — мост придерживает запись</td></tr>
+</table>
+<p style="font-size:30px;line-height:1.4;color:#4A5568">Пишем <b style="color:#1A2433">только в активный кластер</b> — туда, откуда читают консьюмеры. Запись на резервный осталась бы непрочитанной: MirrorMaker копирует в одну сторону.</p>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">7</p>
+</div>
+<aside>Главный урок разработки. Любая ошибка в сторону «виновато сообщение» для моста означает потерю — запись уходит в DLQ. Любая ошибка в сторону «виноват кластер» — лишний failover всей группы и флаппинг. Поэтому: вина сообщения — только для доказуемых свойств записи; поломка кластера — только когда он недоступен или ретраибельная ошибка Kafka не прошла; всё остальное — запись придерживается. Отправка всегда синхронная: стартер сам выставляет sync: true. Правило «только активный кластер» найдено живым прогоном: обход на резервный кластер оставлял записи непрочитанными.</aside>
+</section></div>
+<div class="slide-wrap"><section id="groups" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Группы кластеров</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">Несколько независимых Kafka в одном приложении</h2>
+</div>
+<div style="display:flex;gap:48px">
+<div style="width:760px;display:flex;flex-direction:column;background:#17263D;border:1px solid #2A3B57;border-radius:16px;padding:36px 40px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;line-height:1.5;color:#D6DEEA">kafka-dr:<br>&#160;&#160;cluster-groups:<br>&#160;&#160;&#160;&#160;<span style="color:#F0954F">core</span>:<br>&#160;&#160;&#160;&#160;&#160;&#160;clusters: { a: …, b: … }<br>&#160;&#160;&#160;&#160;<span style="color:#F0954F">analytics</span>:<br>&#160;&#160;&#160;&#160;&#160;&#160;clusters: { a: …, b: … }<br>&#160;&#160;consumers:<br>&#160;&#160;&#160;&#160;orders-bridge:<br>&#160;&#160;&#160;&#160;&#160;&#160;cluster-group: core<br>&#160;&#160;&#160;&#160;&#160;&#160;depends-on: analytics</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Своя жизнь у каждой группы</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Выборы, failover, failback-after, health-check и окружение — отдельно для core и analytics</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Продюсер по имени</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">producer.to("order-analytics").send(…).orThrow() — имя скрывает, в какой Kafka топик</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Старый формат работает</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">kafka-dr.clusters — это группа default с прежними именами binder'ов и ключей</p>
+</div>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">8</p>
+</div>
+<aside>Группа — это одна логическая Kafka со своими основным и резервными кластерами. В одном приложении их может быть несколько, и каждая переключается независимо: падение analytics не трогает core. Один физический кластер входит только в одну группу — это проверяется на старте. Продюсер адресуется по логическому имени, поэтому перенос топика в другую группу — только изменение конфигурации. Существующие конфигурации без групп продолжают работать без изменений.</aside>
+</section></div>
+<div class="slide-wrap"><section id="bridge" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:44px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Мосты между Kafka · depends-on</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Пока целевая Kafka лежит, записи ждут, а не теряются</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">1 · Пауза</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Binding консьюмера на паузе, пока у группы-зависимости нет здорового кластера. Без ребалансировки.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">2 · Гейт</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Уже вычитанные записи не доходят до обработчика: nack и повтор через интервал. Ретраи не тратятся.</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:12px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:36px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#2F6FB3">3 · Переклассификация</p>
+<p style="font-size:28px;line-height:1.4;color:#4A5568">Сбой отправки внутри обработчика превращается в nack, а не в исключение. Метка идемпотентности снимается.</p>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:32px;background:#0F1B2D;border-radius:16px;padding:32px 40px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:28px;font-weight:600;color:#F0954F;white-space:nowrap">max-hold</p>
+<p style="font-size:28px;line-height:1.4;color:#D6DEEA">Если зависимость жива, а запись всё равно не проходит, она держится не дольше depends-on-max-hold-ms (10 мин). Время, пока группа лежит, не считается.</p>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">9</p>
+</div>
+<aside>Мост — консьюмер в одной Kafka, который пишет в другую. Без depends-on падение целевой Kafka выглядит как ошибка обработчика: ретраи кончаются за секунды, запись пропускается. С depends-on — три слоя: пауза, гейт перед обработчиком и переклассификация сбоя. Nack не считается попыткой доставки, поэтому ожидание может длиться сколько угодно. max-hold ограничивает только случай «группа жива, но запись не берут» — например, нет ACL: иначе такая запись остановила бы поток навсегда. Требование: ручной ack-mode, это проверяется на старте.</aside>
+</section></div>
+<div class="slide-wrap"><section id="features" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Возможности</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Ещё из коробки</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:24px">
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Batch</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">split по записям или standard конвертом; BatchOutcome с вердиктом на запись</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Ручной ack</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">ack.owner: starter — коммит после успешного обработчика, без кода</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Поздний старт</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Кластер, недоступный при старте, подключается, когда оживёт</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Топики везде</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">auto-create-topics создаёт их на всех кластерах заранее, а не в момент failover</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Schema Registry</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Свой реестр у каждого кластера; Avro, JSON, native</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Проверки на старте</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Опасные конфигурации отклоняются до того, как потеряют данные</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">Health endpoint</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Активный кластер и статус каждого — в /actuator/health</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:10px;background:#FCFBF8;border:1px solid #E2DED5;border-radius:16px;padding:28px">
+<h3 style="font-size:30px;font-weight:600;color:#1A2433">DR_EVENT-логи</h3>
+<p style="font-size:24px;line-height:1.4;color:#4A5568">Каждое переключение и seek — отдельной строкой; debug-режим со стектрейсами</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">10</p>
+</div>
+<aside>Обзор остальных возможностей. Batch: режим split прогоняет записи по одной с дедупликацией и коммитом префикса, standard отдаёт обработчику весь конверт. Проверки на старте — важная часть философии: конфигурация, которая выглядит защищённой, но теряет данные (например, depends-on без ручного ack или асинхронная отправка), не стартует вовсе.</aside>
+</section></div>
+<div class="slide-wrap"><section id="verified" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:56px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Проверено</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">Тесты и живые прогоны на реальных кластерах</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-size:120px;font-weight:700;line-height:1;color:#F5F3EE">620</p>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6">тестов, 0 падений: 586 в стартере, 34 в примерах</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-size:120px;font-weight:700;line-height:1;color:#F5F3EE">94%</p>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6">покрытие инструкций стартера, 87% веток</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:8px;border-top:4px solid #F0954F;padding:24px 0px 0px 0px">
+<p style="font-size:120px;font-weight:700;line-height:1;color:#F5F3EE">7</p>
+<p style="font-size:28px;line-height:1.4;color:#B8C4D6">примеров, каждый прогнан вживую на своём docker-стенде</p>
+</div>
+</div>
+<p style="font-size:28px;line-height:1.5;color:#D6DEEA">Сценарии: failover и failback · потеря 1 из 3 брокеров без failover · падение группы-зависимости · max-hold · топик, созданный после старта · восстановление состояния из Redis после рестарта</p>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">11</p>
+</div>
+<aside>Кроме модульных тестов — мутационная проверка: в копию кода намеренно вносились ошибки, и тесты должны были их поймать. Тесты на многопоточность прогонялись многократно. Но главное — живые прогоны: несколько серьёзных проблем нашли только они, а не статическое ревью. Например, что запись на резервный кластер остаётся непрочитанной, и что binding, созданный после старта, нельзя было остановить.</aside>
+</section></div>
+<div class="slide-wrap"><section id="pros" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Плюсы</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Что даёт проект</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px 48px">
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Отказоустойчивость конфигурацией.</b> В обработчиках нет кода DR</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Автоматический failover и failback</b> — с окном failback-after, которое переживает рестарт</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Без пропусков и дублей</b> на переходе: seek по времени плюс идемпотентность</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Несколько Kafka в одном сервисе</b> и мосты между ними без потерь</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Честная классификация ошибок:</b> нет ни лишних failover, ни тихих потерь</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Опасные настройки не стартуют</b> — ошибка видна сразу, а не в инциденте</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Расширяемость:</b> свои хранилища идемпотентности, состояния и отметок времени (Redis в примерах)</p>
+</div>
+<div style="display:flex;gap:20px;align-items:start">
+<span class="x-icon" style="width:40px;height:40px;color:#2F6FB3"><svg viewBox="0 0 24 24" width="100%" height="100%" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="CheckCircle"><circle cx="12" cy="12" r="9.5"/><polyline points="7.5 12.5 10.5 15.5 16.5 9"/></svg></span>
+<p style="font-size:28px;line-height:1.4;color:#4A5568"><b style="color:#1A2433">Обратная совместимость:</b> одногрупповые конфигурации работают как раньше</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">12</p>
+</div>
+<aside>Главная ценность — DR перестаёт быть ответственностью каждой команды, которая пишет консьюмеры. Решения приняты один раз, в стартере, и проверены тестами и живыми прогонами. Изменения, требующие внимания при обновлении, перечислены в README в разделе заметок о миграции.</aside>
+</section></div>
+<div class="slide-wrap"><section id="cons" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Минусы и ограничения</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">О чём важно знать заранее</h2>
+</div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:28px 56px">
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Только active-passive</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Пишем и читаем один кластер группы; репликация — MirrorMaker 2 в одну сторону</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Нет exactly-once между Kafka</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Сбой между отправкой и коммитом даёт повтор — его отсекает IdempotencyStore</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Дедупликация по умолчанию в памяти</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">После рестарта метки теряются; для прода нужно своё хранилище</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Придержанная запись тормозит поток</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">До max-hold консьюмер не двигается; после — без DLQ запись пропускается</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Обнаружение — не мгновенно</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Failover по пробам занимает интервал × порог; отправка ускоряет его</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Отсутствующий топик: блок ~45 с</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Первая отправка ждёт провижнер SCS — топики лучше создавать до старта</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Привязка к стеку</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Spring Boot 4, SCS 5, Kafka binder; ошибки реестра — по формам Confluent 8.x</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:6px">
+<h3 style="font-size:30px;font-weight:600;color:#F0954F">Большая поверхность настроек</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Группы, depends-on, ack, batch — нужна дисциплина и чтение README</p>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">13</p>
+</div>
+<aside>Честный список ограничений. Самое принципиальное — модель active-passive: стартер не делает active-active и не реплицирует данные сам. Exactly-once между разными Kafka невозможен в принципе: нет транзакции, охватывающей два кластера, поэтому ставка на идемпотентность получателя. Придержанная запись — осознанный компромисс «лучше видимая задержка, чем тихая потеря», ограниченный max-hold. Блок примерно 45 секунд на отсутствующем топике — поведение самого Spring Cloud Stream, оно задокументировано. Распознавание ошибок Schema Registry проверено по исходникам Confluent 8.2; при смене мажорной версии клиента это место стоит перепроверить.</aside>
+</section></div>
+<div class="slide-wrap"><section id="fit" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Итог</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Когда стартер подходит, а когда нет</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FCFBF8;border:1px solid #E2DED5;border-top:6px solid #2F6FB3;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#2F6FB3">Подходит</h3>
+<ul style="font-size:28px;line-height:1.5;color:#4A5568">
+<li>Spring Cloud Stream на Kafka, основной и резервный кластеры с MirrorMaker 2</li>
+<li>Нужен автоматический failover без потерь и дублей</li>
+<li>Сервис обменивается данными между несколькими Kafka</li>
+<li>DR нужен многим командам — единообразно</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FCFBF8;border:1px solid #E2DED5;border-top:6px solid #B4561B;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#B4561B">Не подходит</h3>
+<ul style="font-size:28px;line-height:1.5;color:#4A5568">
+<li>Нужен active-active или запись в несколько кластеров сразу</li>
+<li>Нужен строгий exactly-once между Kafka</li>
+<li>Не Spring Cloud Stream: чистый Kafka-клиент или Kafka Streams</li>
+<li>Один кластер без резерва — стартер ничего не добавит</li>
+</ul>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">14</p>
+</div>
+<aside>Резюме: стартер закрывает типовой сценарий active-passive DR для Spring Cloud Stream и обмен между независимыми Kafka. За его пределами — active-active, exactly-once между кластерами и другие клиентские стеки. Следующие шаги: прочитать README и заметки о миграции, поднять пример multi-group, выбрать хранилища для идемпотентности и состояния.</aside>
+</section></div>
+<script>
+  function fit() {
+    document.querySelectorAll('.slide-wrap').forEach(function (w) {
+      w.firstElementChild.style.transform = 'scale(' + (w.clientWidth / 1920) + ')';
+    });
+  }
+  window.addEventListener('resize', fit);
+  window.addEventListener('load', fit);
+  fit();
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'n' || e.key === 'N' || e.key === 'т' || e.key === 'Т') document.body.classList.toggle('notes');
+  });
+</script>
+</body>
+</html>

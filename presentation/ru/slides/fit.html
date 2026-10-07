@@ -1,0 +1,31 @@
+<section id="fit" data-transition="fade" style="background:#F5F3EE;color:#1A2433;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#B4561B;letter-spacing:2px;text-transform:uppercase">Итог</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#1A2433">Когда стартер подходит, а когда нет</h2>
+</div>
+<div style="display:flex;gap:32px">
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FCFBF8;border:1px solid #E2DED5;border-top:6px solid #2F6FB3;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#2F6FB3">Подходит</h3>
+<ul style="font-size:28px;line-height:1.5;color:#4A5568">
+<li>Spring Cloud Stream на Kafka, основной и резервный кластеры с MirrorMaker 2</li>
+<li>Нужен автоматический failover без потерь и дублей</li>
+<li>Сервис обменивается данными между несколькими Kafka</li>
+<li>DR нужен многим командам — единообразно</li>
+</ul>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:20px;background:#FCFBF8;border:1px solid #E2DED5;border-top:6px solid #B4561B;border-radius:16px;padding:40px">
+<h3 style="font-size:36px;font-weight:600;color:#B4561B">Не подходит</h3>
+<ul style="font-size:28px;line-height:1.5;color:#4A5568">
+<li>Нужен active-active или запись в несколько кластеров сразу</li>
+<li>Нужен строгий exactly-once между Kafka</li>
+<li>Не Spring Cloud Stream: чистый Kafka-клиент или Kafka Streams</li>
+<li>Один кластер без резерва — стартер ничего не добавит</li>
+</ul>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#6A7179">Kafka DR Starter</p>
+<p style="font-size:24px;color:#6A7179">14</p>
+</div>
+<aside>Резюме: стартер закрывает типовой сценарий active-passive DR для Spring Cloud Stream и обмен между независимыми Kafka. За его пределами — active-active, exactly-once между кластерами и другие клиентские стеки. Следующие шаги: прочитать README и заметки о миграции, поднять пример multi-group, выбрать хранилища для идемпотентности и состояния.</aside>
+</section>

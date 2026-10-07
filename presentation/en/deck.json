@@ -1,0 +1,20 @@
+{
+  "v": 4,
+  "createdOnFiles": {"v": 1, "at": "2026-10-07T15:17:22Z"},
+  "lists": "css",
+  "title": "Kafka DR Starter (EN)",
+  "cover": "cover",
+  "order": ["cover", "problem", "solution", "architecture", "failover", "no-loss", "producer", "groups", "bridge", "features", "verified", "pros", "cons", "fit"],
+  "sections": {
+    "s1": {"description": "Why: what breaks when a Kafka cluster goes down, and what the starter offers", "start": "cover"},
+    "s2": {"description": "How it works: cluster election, failover, no loss and no duplicates, the producer", "start": "architecture"},
+    "s3": {"description": "Several independent Kafkas and bridges between them", "start": "groups"},
+    "s4": {"description": "What backs it: tests and live runs", "start": "verified"},
+    "s5": {"description": "Assessment: pros, cons and when to use it", "start": "pros"}
+  },
+  "faces": {
+    "ibm-plex-sans": {"family": "IBM Plex Sans", "href": "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"},
+    "jetbrains-mono": {"family": "JetBrains Mono", "href": "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap"}
+  },
+  "designSystems": []
+}

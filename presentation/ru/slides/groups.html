@@ -1,0 +1,30 @@
+<section id="groups" data-transition="fade" style="background:#0F1B2D;color:#F5F3EE;font-family:'IBM Plex Sans', Arial, sans-serif;padding:128px 128px 160px;display:flex;flex-direction:column;gap:48px">
+<div style="display:flex;flex-direction:column;gap:16px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:24px;color:#F0954F;letter-spacing:2px;text-transform:uppercase">Группы кластеров</p>
+<h2 style="font-size:72px;font-weight:600;line-height:1.1;color:#F5F3EE">Несколько независимых Kafka в одном приложении</h2>
+</div>
+<div style="display:flex;gap:48px">
+<div style="width:760px;display:flex;flex-direction:column;background:#17263D;border:1px solid #2A3B57;border-radius:16px;padding:36px 40px">
+<p style="font-family:'JetBrains Mono', 'Courier New', monospace;font-size:26px;line-height:1.5;color:#D6DEEA">kafka-dr:<br>&#160;&#160;cluster-groups:<br>&#160;&#160;&#160;&#160;<span style="color:#F0954F">core</span>:<br>&#160;&#160;&#160;&#160;&#160;&#160;clusters: { a: …, b: … }<br>&#160;&#160;&#160;&#160;<span style="color:#F0954F">analytics</span>:<br>&#160;&#160;&#160;&#160;&#160;&#160;clusters: { a: …, b: … }<br>&#160;&#160;consumers:<br>&#160;&#160;&#160;&#160;orders-bridge:<br>&#160;&#160;&#160;&#160;&#160;&#160;cluster-group: core<br>&#160;&#160;&#160;&#160;&#160;&#160;depends-on: analytics</p>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Своя жизнь у каждой группы</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">Выборы, failover, failback-after, health-check и окружение — отдельно для core и analytics</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Продюсер по имени</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">producer.to("order-analytics").send(…).orThrow() — имя скрывает, в какой Kafka топик</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<h3 style="font-size:32px;font-weight:600;color:#F5F3EE">Старый формат работает</h3>
+<p style="font-size:26px;line-height:1.4;color:#B8C4D6">kafka-dr.clusters — это группа default с прежними именами binder'ов и ключей</p>
+</div>
+</div>
+</div>
+<div style="position:absolute;left:128px;bottom:64px;width:1664px;display:flex;justify-content:space-between">
+<p style="font-size:24px;color:#8FA0B8">Kafka DR Starter</p>
+<p style="font-size:24px;color:#8FA0B8">8</p>
+</div>
+<aside>Группа — это одна логическая Kafka со своими основным и резервными кластерами. В одном приложении их может быть несколько, и каждая переключается независимо: падение analytics не трогает core. Один физический кластер входит только в одну группу — это проверяется на старте. Продюсер адресуется по логическому имени, поэтому перенос топика в другую группу — только изменение конфигурации. Существующие конфигурации без групп продолжают работать без изменений.</aside>
+</section>
